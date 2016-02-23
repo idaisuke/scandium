@@ -33,8 +33,11 @@
 #include <string>
 #include <thread>
 #include <utility>
+
 #include "sqlite3.h"
 
+//TODO: stringstream -> string.append, sqlite_exception has rc, std::int_fast64_tとintが同じ型の場合
+//TODO: sqlite_cursor.get(int)の範囲外テスト, sqlite_iteratorのend()との比較を再考
 namespace scandium {
 
     class sqlite_database;
