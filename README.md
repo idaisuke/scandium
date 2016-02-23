@@ -1,2 +1,2 @@
 # scandium
-SQLite Wrapper for C++
+A C++11 Wrapper for SQLite
