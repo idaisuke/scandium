@@ -23,7 +23,6 @@
 #ifndef SCANDIUM_H
 #define SCANDIUM_H
 
-#include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <functional>
@@ -36,15 +35,16 @@
 
 #include "sqlite3.h"
 
-//TODO: stringstream -> string.append, sqlite_exception has rc, std::int_fast64_tとintが同じ型の場合
-//TODO: sqlite_cursor.get(int)の範囲外テスト, sqlite_iteratorのend()との比較を再考
+//TODO: sqlite_iteratorのend()との比較を再考
+//TODO: blob64
+//TODO: exec_sqlとqueryの統合
 namespace scandium {
 
     class sqlite_database;
 
     class sqlite_iterator;
 
-    class sqlite_query;
+    class sqlite_result_set;
 
     /**
      *  Represents a BLOB object of SQLite.
@@ -54,20 +54,24 @@ namespace scandium {
         int size;
     };
 
+    struct sqlite_blob64 {
+        const void *data;
+        sqlite3_uint64 size;
+    };
+
     /**
      *  Represents an exception that is thrown when SQLite error occurred.
      */
     class sqlite_exception : public std::runtime_error {
     public:
-        sqlite_exception(const char *what): std::runtime_error(what) {
+        sqlite_exception(const char *what, int rc = -1) : std::runtime_error(what), rc(rc) {
         }
 
-        sqlite_exception(const std::string &what) : std::runtime_error(what) {
+        sqlite_exception(const std::string &what, int rc = -1) : std::runtime_error(what), rc(rc) {
         }
+
+        const int rc;
     };
-
-#pragma mark -
-#pragma mark sqlite_statement
 
     /**
      *  Represents a precompiled SQL statement.
@@ -114,7 +118,7 @@ namespace scandium {
         /**
          *  @copydoc sqlite_statement::bind(int,int)
          */
-        void bind(int index, std::int_fast64_t value);
+        void bind(int index, sqlite3_int64 value);
 
         /**
          *  @copydoc sqlite_statement::bind(int,int)
@@ -147,7 +151,7 @@ namespace scandium {
         /**
          *  @copydoc sqlite_statement::bind(const std::string &,int)
          */
-        void bind(const std::string &parameter_name, std::int_fast64_t value);
+        void bind(const std::string &parameter_name, sqlite3_int64 value);
 
         /**
          *  @copydoc sqlite_statement::bind(const std::string &,int)
@@ -187,36 +191,33 @@ namespace scandium {
 
         void reset();
 
-        int bind_values_internal(int);
+        void bind_values_internal(int);
 
         template<class... ArgType>
-        int bind_values_internal(int index, int first_arg, ArgType &&... bind_args);
+        void bind_values_internal(int index, int first_arg, ArgType &&... bind_args);
 
         template<class... ArgType>
-        int bind_values_internal(int index, std::int_fast64_t first_arg, ArgType &&... bind_args);
+        void bind_values_internal(int index, sqlite3_int64 first_arg, ArgType &&... bind_args);
 
         template<class... ArgType>
-        int bind_values_internal(int index, double first_arg, ArgType &&... bind_args);
+        void bind_values_internal(int index, double first_arg, ArgType &&... bind_args);
 
         template<class... ArgType>
-        int bind_values_internal(int index, std::string first_arg, ArgType &&... bind_args);
+        void bind_values_internal(int index, std::string first_arg, ArgType &&... bind_args);
 
         template<class... ArgType>
-        int bind_values_internal(int index, const char *first_arg, ArgType &&... bind_args);
+        void bind_values_internal(int index, const char *first_arg, ArgType &&... bind_args);
 
         template<class... ArgType>
-        int bind_values_internal(int index, sqlite_blob first_arg, ArgType &&... bind_args);
+        void bind_values_internal(int index, sqlite_blob first_arg, ArgType &&... bind_args);
 
         sqlite_database *_db;
         sqlite3_stmt *_stmt;
 
         friend class sqlite_database;
 
-        friend class sqlite_query;
+        friend class sqlite_result_set;
     };
-
-#pragma mark -
-#pragma mark sqlite_cursor
 
     /**
      *  Represents a cursor to fetch data from a row.
@@ -226,7 +227,7 @@ namespace scandium {
         /**
          *  Gets data from the current row.
          *
-         *  @tparam T int, std::int_fast64_t, double, std::string, const char *, const void * or fe::sqlite_blob.
+         *  @tparam T int, sqlite3_int64, double, std::string, const char *, const void * or fe::sqlite_blob.
          *
          *  @param column_index the zero-based column index.
          */
@@ -237,7 +238,7 @@ namespace scandium {
          *  Gets data for the given column name from the current row,
          *  or throws an exception if the column name does not exist.
          *
-         *  @tparam T int, std::int_fast64_t, double, std::string, const char *, const void * or fe::sqlite_blob.
+         *  @tparam T int, sqlite3_int64, double, std::string, const char *, const void * or fe::sqlite_blob.
          *
          *  @param column_name the column name.
          */
@@ -271,9 +272,6 @@ namespace scandium {
         friend class sqlite_iterator;
     };
 
-#pragma mark -
-#pragma mark sqlite_iterator
-
     /**
      *  Provides an STL-style forward iterator to fetch data from SQLite result set.
      */
@@ -305,19 +303,16 @@ namespace scandium {
         sqlite_database *_db;
         sqlite3_stmt **_stmt;
         sqlite_cursor _cursor;
-        std::int_fast64_t _rowIndex;
+        sqlite3_int64 _rowIndex;
         int _state;
 
-        friend class sqlite_query;
+        friend class sqlite_result_set;
     };
 
-#pragma mark -
-#pragma mark sqlite_query
-
     /**
-     *  Represents an SQL query.
+     *  Represents an SQLite result set.
      */
-    class sqlite_query {
+    class sqlite_result_set {
     public:
         /**
          *  Returns the iterator pointing to the first row.
@@ -332,16 +327,13 @@ namespace scandium {
         sqlite_iterator end();
 
     private:
-        sqlite_query(sqlite_database *db, sqlite_statement &&statement);
+        sqlite_result_set(sqlite_database *db, sqlite_statement &&statement);
 
         sqlite_database *_db;
         sqlite_statement _statement;
 
         friend class sqlite_database;
     };
-
-#pragma mark -
-#pragma mark sqlite_transaction_mode
 
     /**
      *  Describes the SQLite transaction modes.
@@ -351,9 +343,6 @@ namespace scandium {
         immediate,
         exclusive,
     };
-
-#pragma mark -
-#pragma mark sqlite_transaction
 
     /**
      *  Represents a transaction using the RAII idiom.
@@ -398,9 +387,6 @@ namespace scandium {
         friend class sqlite_database;
     };
 
-#pragma mark -
-#pragma mark sqlite_listener
-
     /**
      *  Used for receiving notifications when the user version of the SQLite database has changed and so on.
      */
@@ -415,9 +401,6 @@ namespace scandium {
          */
         std::function<void(sqlite_database *db, int old_version, int new_version)> on_downgrade;
     };
-
-#pragma mark -
-#pragma mark sqlite_database
 
     /**
      *  Represents an SQLite database.
@@ -499,7 +482,7 @@ namespace scandium {
         /**
          *  Runs the given SQL statement that returns data such as SELECT.
          */
-        sqlite_query query(const std::string &sql);
+        sqlite_result_set query(const std::string &sql);
 
         /**
          *  Runs the given SQL statement that returns data such as SELECT.
@@ -508,7 +491,7 @@ namespace scandium {
          *  @param bind_args the values to bind to the placeholders such as ?
          */
         template<class... ArgType>
-        sqlite_query query(const std::string &sql, ArgType &&... bind_args);
+        sqlite_result_set query(const std::string &sql, ArgType &&... bind_args);
 
         /**
          *  Creates a precompiled SQL statement.
@@ -607,9 +590,7 @@ namespace scandium {
     };
 
 
-
-#pragma mark -
-#pragma mark sqlite_statement
+#pragma mark ## sqlite_statement ##
 
     inline sqlite_statement::~sqlite_statement() noexcept {
         sqlite3_finalize(_stmt);
@@ -633,74 +614,55 @@ namespace scandium {
     inline void sqlite_statement::finalize() {
         auto rc = sqlite3_finalize(_stmt);
         if (rc != SQLITE_OK) {
-            std::stringstream ss;
-            ss << "Failed to finalize statement, result code = " << rc;
-            throw sqlite_exception(ss.str());
+            throw sqlite_exception("Failed to finalize statement", rc);
         }
         _stmt = nullptr;
     }
 
     template<class... ArgType>
     void sqlite_statement::bind_values(ArgType &&... bind_args) {
-        auto rc = bind_values_internal(1, std::forward<ArgType>(bind_args)...);
-        if (rc != SQLITE_OK) {
-            std::stringstream ss;
-            ss << "Failed to bind int, result code = " << rc;
-            throw sqlite_exception(ss.str());
-        }
+        bind_values_internal(1, std::forward<ArgType>(bind_args)...);
     }
 
     inline void sqlite_statement::bind(int index, int value) {
         auto rc = sqlite3_bind_int(_stmt, index, value);
         if (rc != SQLITE_OK) {
-            std::stringstream ss;
-            ss << "Failed to bind int, result code = " << rc;
-            throw sqlite_exception(ss.str());
+            throw sqlite_exception("Failed to bind int", rc);
         }
     }
 
-    inline void sqlite_statement::bind(int index, std::int_fast64_t value) {
+    inline void sqlite_statement::bind(int index, sqlite3_int64 value) {
         auto rc = sqlite3_bind_int64(_stmt, index, value);
         if (rc != SQLITE_OK) {
-            std::stringstream ss;
-            ss << "Failed to bind int64, result code = " << rc;
-            throw sqlite_exception(ss.str());
+            throw sqlite_exception("Failed to bind int64", rc);
         }
     }
 
     inline void sqlite_statement::bind(int index, double value) {
         auto rc = sqlite3_bind_double(_stmt, index, value);
         if (rc != SQLITE_OK) {
-            std::stringstream ss;
-            ss << "Failed to bind double, result code = " << rc;
-            throw sqlite_exception(ss.str());
+            throw sqlite_exception("Failed to bind double", rc);
         }
     }
 
     inline void sqlite_statement::bind(int index, const std::string &value) {
         auto rc = sqlite3_bind_text(_stmt, index, value.c_str(), static_cast<int>(value.length()), SQLITE_TRANSIENT);
         if (rc != SQLITE_OK) {
-            std::stringstream ss;
-            ss << "Failed to bind text, result code = " << rc;
-            throw sqlite_exception(ss.str());
+            throw sqlite_exception("Failed to bind text", rc);
         }
     }
 
     inline void sqlite_statement::bind(int index, const char *value) {
         auto rc = sqlite3_bind_text(_stmt, index, value, static_cast<int>(std::strlen(value)), SQLITE_TRANSIENT);
         if (rc != SQLITE_OK) {
-            std::stringstream ss;
-            ss << "Failed to bind text, result code = " << rc;
-            throw sqlite_exception(ss.str());
+            throw sqlite_exception("Failed to bind text", rc);
         }
     }
 
     inline void sqlite_statement::bind(int index, sqlite_blob value) {
         auto rc = sqlite3_bind_blob(_stmt, index, value.data, value.size, SQLITE_TRANSIENT);
         if (rc != SQLITE_OK) {
-            std::stringstream ss;
-            ss << "Failed to bind blob, result code = " << rc;
-            throw sqlite_exception(ss.str());
+            throw sqlite_exception("Failed to bind blob", rc);
         }
     }
 
@@ -710,20 +672,20 @@ namespace scandium {
             std::string what;
             what.append("No matching parameter named '");
             what.append(parameter_name);
-            what.append("' is found.");
+            what.append("' is found");
             throw sqlite_exception(what);
         }
 
         bind(index, value);
     }
 
-    inline void sqlite_statement::bind(const std::string &parameter_name, std::int_fast64_t value) {
+    inline void sqlite_statement::bind(const std::string &parameter_name, sqlite3_int64 value) {
         auto index = sqlite3_bind_parameter_index(_stmt, parameter_name.c_str());
         if (index == 0) {
             std::string what;
             what.append("No matching parameter named '");
             what.append(parameter_name);
-            what.append("' is found.");
+            what.append("' is found");
             throw sqlite_exception(what);
         }
 
@@ -736,7 +698,7 @@ namespace scandium {
             std::string what;
             what.append("No matching parameter named '");
             what.append(parameter_name);
-            what.append("' is found.");
+            what.append("' is found");
             throw sqlite_exception(what);
         }
 
@@ -749,7 +711,7 @@ namespace scandium {
             std::string what;
             what.append("No matching parameter named '");
             what.append(parameter_name);
-            what.append("' is found.");
+            what.append("' is found");
             throw sqlite_exception(what);
         }
 
@@ -762,7 +724,7 @@ namespace scandium {
             std::string what;
             what.append("No matching parameter named '");
             what.append(parameter_name);
-            what.append("' is found.");
+            what.append("' is found");
             throw sqlite_exception(what);
         }
 
@@ -775,7 +737,7 @@ namespace scandium {
             std::string what;
             what.append("No matching parameter named '");
             what.append(parameter_name);
-            what.append("' is found.");
+            what.append("' is found");
             throw sqlite_exception(what);
         }
 
@@ -785,18 +747,14 @@ namespace scandium {
     inline void sqlite_statement::clear_bindings() {
         auto rc = sqlite3_clear_bindings(_stmt);
         if (rc != SQLITE_OK) {
-            std::stringstream ss;
-            ss << "Failed to clear bindings, result code = " << rc;
-            throw sqlite_exception(ss.str());
+            throw sqlite_exception("Failed to clear bindings", rc);
         }
     }
 
     inline sqlite_statement::sqlite_statement(sqlite_database *db, const std::string &sql) : _db(db) {
         auto rc = sqlite3_prepare_v2(db->handle(), sql.c_str(), static_cast<int>(sql.length()), &_stmt, nullptr);
         if (rc != SQLITE_OK) {
-            std::stringstream ss;
-            ss << "Failed to prepare statement, SQL = \"" << sql << "\", result code = " << rc;
-            throw sqlite_exception(ss.str());
+            throw sqlite_exception("Failed to prepare statement, SQL = \"" + sql + "\"", rc);
         }
     }
 
@@ -813,87 +771,81 @@ namespace scandium {
         }
 
         if (rc == SQLITE_ROW) {
-            throw sqlite_exception("This method must not be an SQL statement that returns data.");
+            throw sqlite_exception("This method must not be an SQL statement that returns data");
         }
 
         if (rc != SQLITE_DONE) {
-            std::stringstream ss;
-            ss << "Failed to step statement, result code = " << rc;
-            throw sqlite_exception(ss.str());
+            throw sqlite_exception("Failed to step statement", rc);
         }
     }
 
     inline void sqlite_statement::reset() {
         auto rc = sqlite3_reset(_stmt);
         if (rc != SQLITE_OK) {
-            std::stringstream ss;
-            ss << "Failed to reset statement, result code = " << rc;
-            throw sqlite_exception(ss.str());
+            throw sqlite_exception("Failed to reset statement", rc);
         }
     }
 
-    int sqlite_statement::bind_values_internal(int) {
-        return SQLITE_OK;
+    void sqlite_statement::bind_values_internal(int) {
     }
 
     template<class... ArgType>
-    int sqlite_statement::bind_values_internal(int index, int first_arg, ArgType &&... bind_args) {
+    void sqlite_statement::bind_values_internal(int index, int first_arg, ArgType &&... bind_args) {
         auto rc = sqlite3_bind_int(_stmt, index, first_arg);
         if (rc != SQLITE_OK) {
-            return rc;
+            throw sqlite_exception("Failed to bind int", rc);
         }
-        return bind_values_internal(index + 1, std::forward<ArgType>(bind_args)...);
+        bind_values_internal(index + 1, std::forward<ArgType>(bind_args)...);
     }
 
     template<class... ArgType>
-    int sqlite_statement::bind_values_internal(int index, std::int_fast64_t first_arg, ArgType &&... bind_args) {
+    void sqlite_statement::bind_values_internal(int index, sqlite3_int64 first_arg, ArgType &&... bind_args) {
         auto rc = sqlite3_bind_int64(_stmt, index, first_arg);
         if (rc != SQLITE_OK) {
-            return rc;
+            throw sqlite_exception("Failed to bind int64", rc);
         }
-        return bind_values_internal(index + 1, std::forward<ArgType>(bind_args)...);
+        bind_values_internal(index + 1, std::forward<ArgType>(bind_args)...);
     }
 
     template<class... ArgType>
-    int sqlite_statement::bind_values_internal(int index, double first_arg, ArgType &&... bind_args) {
+    void sqlite_statement::bind_values_internal(int index, double first_arg, ArgType &&... bind_args) {
         auto rc = sqlite3_bind_double(_stmt, index, first_arg);
         if (rc != SQLITE_OK) {
-            return rc;
+            throw sqlite_exception("Failed to bind double", rc);
         }
-        return bind_values_internal(index + 1, std::forward<ArgType>(bind_args)...);
+        bind_values_internal(index + 1, std::forward<ArgType>(bind_args)...);
     }
 
     template<class... ArgType>
-    int sqlite_statement::bind_values_internal(int index, std::string first_arg, ArgType &&... bind_args) {
-        auto rc =
-                sqlite3_bind_text(_stmt, index, first_arg.c_str(), static_cast<int>(first_arg.length()), SQLITE_TRANSIENT);
+    void sqlite_statement::bind_values_internal(int index, std::string first_arg, ArgType &&... bind_args) {
+        auto rc = sqlite3_bind_text(_stmt, index, first_arg.c_str(), static_cast<int>(first_arg.length()),
+                SQLITE_TRANSIENT);
         if (rc != SQLITE_OK) {
-            return rc;
+            throw sqlite_exception("Failed to bind text", rc);
         }
-        return bind_values_internal(index + 1, std::forward<ArgType>(bind_args)...);
+        bind_values_internal(index + 1, std::forward<ArgType>(bind_args)...);
     }
 
     template<class... ArgType>
-    int sqlite_statement::bind_values_internal(int index, const char *first_arg, ArgType &&... bind_args) {
-        auto rc =
-                sqlite3_bind_text(_stmt, index, first_arg, static_cast<int>(std::strlen(first_arg)), SQLITE_TRANSIENT);
+    void sqlite_statement::bind_values_internal(int index, const char *first_arg, ArgType &&... bind_args) {
+        auto rc = sqlite3_bind_text(_stmt, index, first_arg, static_cast<int>(std::strlen(first_arg)),
+                SQLITE_TRANSIENT);
         if (rc != SQLITE_OK) {
-            return rc;
+            throw sqlite_exception("Failed to bind text", rc);
         }
-        return bind_values_internal(index + 1, std::forward<ArgType>(bind_args)...);
+        bind_values_internal(index + 1, std::forward<ArgType>(bind_args)...);
     }
 
     template<class... ArgType>
-    int sqlite_statement::bind_values_internal(int index, sqlite_blob first_arg, ArgType &&... bind_args) {
+    void sqlite_statement::bind_values_internal(int index, sqlite_blob first_arg, ArgType &&... bind_args) {
         auto rc = sqlite3_bind_blob(_stmt, index, first_arg.data, first_arg.size, SQLITE_TRANSIENT);
         if (rc != SQLITE_OK) {
-            return rc;
+            throw sqlite_exception("Failed to bind blob", rc);
         }
-        return bind_values_internal(index + 1, std::forward<ArgType>(bind_args)...);
+        bind_values_internal(index + 1, std::forward<ArgType>(bind_args)...);
     }
 
-#pragma mark -
-#pragma mark sqlite_cursor
+#pragma mark ## sqlite_cursor ##
 
     template<>
     inline int sqlite_cursor::get(int column_index) const {
@@ -901,7 +853,7 @@ namespace scandium {
     }
 
     template<>
-    inline std::int_fast64_t sqlite_cursor::get(int column_index) const {
+    inline sqlite3_int64 sqlite_cursor::get(int column_index) const {
         return sqlite3_column_int64(*_stmt, column_index);
     }
 
@@ -945,7 +897,7 @@ namespace scandium {
             std::string what;
             what.append("Column named '");
             what.append(column_name);
-            what.append("' does not exist.");
+            what.append("' does not exist");
             throw sqlite_exception(what);
         }
         return get<T>(index);
@@ -971,8 +923,7 @@ namespace scandium {
     inline sqlite_cursor::sqlite_cursor(sqlite3_stmt **stmt) : _stmt(stmt) {
     }
 
-#pragma mark -
-#pragma mark sqlite_iterator
+#pragma mark ## sqlite_iterator ##
 
     inline sqlite_iterator::sqlite_iterator(sqlite_iterator &&other) noexcept : _db(other._db),
                                                                                 _stmt(other._stmt),
@@ -1006,9 +957,7 @@ namespace scandium {
         }
 
         if (_state != SQLITE_ROW && _state != SQLITE_DONE) {
-            std::stringstream ss;
-            ss << "Failed to step statement, result code = " << _state;
-            throw sqlite_exception(ss.str());
+            throw sqlite_exception("Failed to step statement", _state);
         }
 
         _rowIndex++;
@@ -1043,24 +992,22 @@ namespace scandium {
         ++(*this);
     }
 
-#pragma mark -
-#pragma mark sqlite_query
+#pragma mark ## sqlite_result_set ##
 
-    inline sqlite_iterator sqlite_query::begin() {
+    inline sqlite_iterator sqlite_result_set::begin() {
         _statement.reset();
         return sqlite_iterator(_db, _statement.handle());
     }
 
-    inline sqlite_iterator sqlite_query::end() {
+    inline sqlite_iterator sqlite_result_set::end() {
         return sqlite_iterator();
     }
 
-    inline sqlite_query::sqlite_query(sqlite_database *db, sqlite_statement &&statement)
+    inline sqlite_result_set::sqlite_result_set(sqlite_database *db, sqlite_statement &&statement)
             : _db(db), _statement(std::move(statement)) {
     }
 
-#pragma mark -
-#pragma mark sqlite_transaction
+#pragma mark ## sqlite_transaction ##
 
     inline sqlite_transaction::~sqlite_transaction() noexcept {
         if (_in_transaction && _db) {
@@ -1099,8 +1046,7 @@ namespace scandium {
         _in_transaction = true;
     }
 
-#pragma mark -
-#pragma mark sqlite_database
+#pragma mark ## sqlite_database ##
 
     inline sqlite_database::sqlite_database() : _path(":memory:") {
     }
@@ -1131,9 +1077,7 @@ namespace scandium {
     inline void sqlite_database::open() {
         auto rc = open_internal();
         if (rc != SQLITE_OK) {
-            std::stringstream ss;
-            ss << "Failed to open database, result code = " << rc;
-            throw sqlite_exception(ss.str());
+            throw sqlite_exception("Failed to open database", rc);
         }
     }
 
@@ -1148,9 +1092,7 @@ namespace scandium {
     inline void sqlite_database::close() {
         auto rc = close_internal();
         if (rc != SQLITE_OK) {
-            std::stringstream ss;
-            ss << "Failed to close database, result code = " << rc;
-            throw sqlite_exception(ss.str());
+            throw sqlite_exception("Failed to close database", rc);
         }
     }
 
@@ -1181,15 +1123,15 @@ namespace scandium {
         statement.exec();
     }
 
-    inline sqlite_query sqlite_database::query(const std::string &sql) {
-        return sqlite_query(this, sqlite_statement(this, sql));
+    inline sqlite_result_set sqlite_database::query(const std::string &sql) {
+        return sqlite_result_set(this, sqlite_statement(this, sql));
     }
 
     template<class... ArgType>
-    sqlite_query sqlite_database::query(const std::string &sql, ArgType &&... bind_args) {
+    sqlite_result_set sqlite_database::query(const std::string &sql, ArgType &&... bind_args) {
         sqlite_statement statement(this, sql);
         statement.bind_values(std::forward<ArgType>(bind_args)...);
-        return sqlite_query(this, std::move(statement));
+        return sqlite_result_set(this, std::move(statement));
     }
 
     inline sqlite_statement sqlite_database::prepare_statement(const std::string &sql) {
@@ -1244,12 +1186,13 @@ namespace scandium {
         _listener = listener;
     }
 
+
     void sqlite_database::set_listener(sqlite_listener &&listener) {
         _listener = std::move(listener);
     }
 
     inline int sqlite_database::get_version() {
-        sqlite_query query(this, sqlite_statement(this, "PRAGMA user_version;"));
+        sqlite_result_set query(this, sqlite_statement(this, "PRAGMA user_version;"));
 
         int result = 0;
         for (auto &&cursor : query) {
