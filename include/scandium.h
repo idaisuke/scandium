@@ -20,9 +20,9 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
 
-#ifndef SCANDIUM_H
-#define SCANDIUM_H
+#pragma once
 
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <functional>
@@ -38,6 +38,10 @@
 //TODO: sqlite_iteratorのend()との比較を再考
 //TODO: blob64
 //TODO: exec_sqlとqueryの統合
+//TODO: sqlite_database*, sqlite_statement* -> sqlite3_db**, sqlite3_stmt
+//TODO: sqlite_database -> database
+//TODO: sqlite_exception -> sqlite3_error & std::runtime_error
+//TODO: statement.bind_values -> static method
 namespace scandium {
 
     class sqlite_database;
@@ -54,6 +58,9 @@ namespace scandium {
         int size;
     };
 
+    /**
+     *  Represents a 64bit BLOB object of SQLite.
+     */
     struct sqlite_blob64 {
         const void *data;
         sqlite3_uint64 size;
@@ -64,11 +71,13 @@ namespace scandium {
      */
     class sqlite_exception : public std::runtime_error {
     public:
-        sqlite_exception(const char *what, int rc = -1) : std::runtime_error(what), rc(rc) {
-        }
+        sqlite_exception(const char *what);
 
-        sqlite_exception(const std::string &what, int rc = -1) : std::runtime_error(what), rc(rc) {
-        }
+        sqlite_exception(const char *what, int rc);
+
+        sqlite_exception(const std::string &what);
+
+        sqlite_exception(const std::string &what, int rc);
 
         const int rc;
     };
@@ -98,6 +107,11 @@ namespace scandium {
          *  Finalizes this statement.
          */
         void finalize();
+
+        /**
+         *  TODO:
+         */
+        sqlite_result_set query();
 
         /**
          *  Binds the values to the placeholders such as ?.
@@ -179,13 +193,11 @@ namespace scandium {
         void clear_bindings();
 
     private:
-        sqlite_statement(sqlite_database *db, const std::string &sql);
+        sqlite_statement(sqlite3 *db, const std::string &sql);
 
         sqlite_statement(const sqlite_statement &) = delete;
 
         sqlite_statement &operator=(const sqlite_statement &) = delete;
-
-        sqlite3_stmt **handle();
 
         void exec();
 
@@ -211,7 +223,7 @@ namespace scandium {
         template<class... ArgType>
         void bind_values_internal(int index, sqlite_blob first_arg, ArgType &&... bind_args);
 
-        sqlite_database *_db;
+        sqlite3 *_db;
         sqlite3_stmt *_stmt;
 
         friend class sqlite_database;
@@ -257,6 +269,11 @@ namespace scandium {
          *
          *  @param column_name the name of the target column.
          */
+        int get_column_index(const char *column_name) const;
+
+        /**
+         *  @copydoc sqlite_cursor::get_column_index(const char *)
+         */
         int get_column_index(const std::string &column_name) const;
 
         /**
@@ -265,9 +282,9 @@ namespace scandium {
         int get_column_count() const;
 
     private:
-        sqlite_cursor(sqlite3_stmt **stmt);
+        sqlite_cursor(sqlite3_stmt *stmt);
 
-        sqlite3_stmt **_stmt;
+        sqlite3_stmt *_stmt;
 
         friend class sqlite_iterator;
     };
@@ -294,16 +311,16 @@ namespace scandium {
     private:
         sqlite_iterator();
 
-        sqlite_iterator(sqlite_database *db, sqlite3_stmt **stmt);
+        sqlite_iterator(sqlite3 *db, sqlite3_stmt *stmt, std::uint_fast64_t row_index, int state);
 
         sqlite_iterator(const sqlite_iterator &) = delete;
 
         sqlite_iterator &operator=(const sqlite_iterator &) = delete;
 
-        sqlite_database *_db;
-        sqlite3_stmt **_stmt;
+        sqlite3 *_db;
+        sqlite3_stmt *_stmt;
         sqlite_cursor _cursor;
-        sqlite3_int64 _rowIndex;
+        std::uint_fast64_t _row_index;
         int _state;
 
         friend class sqlite_result_set;
@@ -327,10 +344,12 @@ namespace scandium {
         sqlite_iterator end();
 
     private:
-        sqlite_result_set(sqlite_database *db, sqlite_statement &&statement);
+        sqlite_result_set(sqlite3 *db, sqlite3_stmt *stmt);
 
-        sqlite_database *_db;
-        sqlite_statement _statement;
+        sqlite3 *_db;
+        sqlite3_stmt *_stmt;
+
+        friend class sqlite_statement;
 
         friend class sqlite_database;
     };
@@ -440,12 +459,16 @@ namespace scandium {
          */
         void open();
 
+#ifdef SQLITE_HAS_CODEC
+
         /**
          *  Opens the database and/or creates the SQLite database file.
          *
          *  @param passphrase the passphrase to encrypt the database if using sqlcipher and so on.
          */
         void open(const std::string &passphrase);
+
+#endif
 
         /**
          *  Closes this database.
@@ -554,16 +577,6 @@ namespace scandium {
         void update_version(int version, sqlite_transaction_mode mode = sqlite_transaction_mode::deferred);
 
         /**
-         *  Gets the waiting interval time(milliseconds) when SQLITE_BUSY.
-         */
-        int get_busy_waiting_interval_ms() const;
-
-        /**
-         *  Sets the waiting interval time(milliseconds) when SQLITE_BUSY.
-         */
-        void set_busy_waiting_interval_ms(int ms);
-
-        /**
          *  Returns the file path of the database, or ":memory:" if the in-memory database.
          */
         const std::string &get_path() const;
@@ -577,18 +590,28 @@ namespace scandium {
 
         int close_internal() noexcept;
 
-        sqlite3 *handle() const;
-
         std::string _path;
         sqlite3 *_db = nullptr;
         sqlite_listener _listener;
-        int _busy_waiting_interval_ms = 100;
 
         friend class sqlite_statement;
 
         friend class sqlite_iterator;
     };
 
+#pragma mark ## sqlite_exception ##
+
+    inline sqlite_exception::sqlite_exception(const char *what) : std::runtime_error(what), rc(-1) {
+    }
+
+    inline sqlite_exception::sqlite_exception(const char *what, int rc) : std::runtime_error(what), rc(rc) {
+    }
+
+    inline sqlite_exception::sqlite_exception(const std::string &what) : std::runtime_error(what), rc(-1) {
+    }
+
+    inline sqlite_exception::sqlite_exception(const std::string &what, int rc) : std::runtime_error(what), rc(rc) {
+    }
 
 #pragma mark ## sqlite_statement ##
 
@@ -617,6 +640,10 @@ namespace scandium {
             throw sqlite_exception("Failed to finalize statement", rc);
         }
         _stmt = nullptr;
+    }
+
+    inline sqlite_result_set sqlite_statement::query() {
+        return sqlite_result_set(_db, _stmt);
     }
 
     template<class... ArgType>
@@ -751,24 +778,15 @@ namespace scandium {
         }
     }
 
-    inline sqlite_statement::sqlite_statement(sqlite_database *db, const std::string &sql) : _db(db) {
-        auto rc = sqlite3_prepare_v2(db->handle(), sql.c_str(), static_cast<int>(sql.length()), &_stmt, nullptr);
+    inline sqlite_statement::sqlite_statement(sqlite3 *db, const std::string &sql) : _db(db) {
+        auto rc = sqlite3_prepare_v2(_db, sql.c_str(), static_cast<int>(sql.length()), &_stmt, nullptr);
         if (rc != SQLITE_OK) {
             throw sqlite_exception("Failed to prepare statement, SQL = \"" + sql + "\"", rc);
         }
     }
 
-    inline sqlite3_stmt **sqlite_statement::handle() {
-        return &_stmt;
-    }
-
     inline void sqlite_statement::exec() {
         auto rc = sqlite3_step(_stmt);
-
-        while (rc == SQLITE_BUSY) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(_db->get_busy_waiting_interval_ms()));
-            rc = sqlite3_step(_stmt);
-        }
 
         if (rc == SQLITE_ROW) {
             throw sqlite_exception("This method must not be an SQL statement that returns data");
@@ -849,43 +867,43 @@ namespace scandium {
 
     template<>
     inline int sqlite_cursor::get(int column_index) const {
-        return sqlite3_column_int(*_stmt, column_index);
+        return sqlite3_column_int(_stmt, column_index);
     }
 
     template<>
     inline sqlite3_int64 sqlite_cursor::get(int column_index) const {
-        return sqlite3_column_int64(*_stmt, column_index);
+        return sqlite3_column_int64(_stmt, column_index);
     }
 
     template<>
     inline double sqlite_cursor::get(int column_index) const {
-        return sqlite3_column_double(*_stmt, column_index);
+        return sqlite3_column_double(_stmt, column_index);
     }
 
     template<>
     inline const unsigned char *sqlite_cursor::get(int column_index) const {
-        return sqlite3_column_text(*_stmt, column_index);
+        return sqlite3_column_text(_stmt, column_index);
     }
 
     template<>
     inline const char *sqlite_cursor::get(int column_index) const {
-        return reinterpret_cast<const char *>(sqlite3_column_text(*_stmt, column_index));
+        return reinterpret_cast<const char *>(sqlite3_column_text(_stmt, column_index));
     }
 
     template<>
     inline std::string sqlite_cursor::get(int column_index) const {
-        return reinterpret_cast<const char *>(sqlite3_column_text(*_stmt, column_index));
+        return reinterpret_cast<const char *>(sqlite3_column_text(_stmt, column_index));
     }
 
     template<>
     inline const void *sqlite_cursor::get(int column_index) const {
-        return sqlite3_column_blob(*_stmt, column_index);
+        return sqlite3_column_blob(_stmt, column_index);
     }
 
     template<>
     inline sqlite_blob sqlite_cursor::get(int column_index) const {
         sqlite_blob blob;
-        blob.data = sqlite3_column_text(*_stmt, column_index);
+        blob.data = sqlite3_column_text(_stmt, column_index);
         blob.size = static_cast<int>(std::strlen(reinterpret_cast<const char *>(blob.data)) - 1);
         return blob;
     }
@@ -904,23 +922,27 @@ namespace scandium {
     }
 
     inline std::string sqlite_cursor::get_column_name(int column_index) const {
-        return sqlite3_column_name(*_stmt, column_index);
+        return sqlite3_column_name(_stmt, column_index);
     }
 
-    inline int sqlite_cursor::get_column_index(const std::string &column_name) const {
-        for (int i = 0, n = sqlite3_column_count(*_stmt); i < n; ++i) {
-            if (0 == std::strcmp(sqlite3_column_name(*_stmt, i), column_name.c_str())) {
+    inline int sqlite_cursor::get_column_index(const char *column_name) const {
+        for (int i = 0, n = sqlite3_column_count(_stmt); i < n; ++i) {
+            if (0 == std::strcmp(sqlite3_column_name(_stmt, i), column_name)) {
                 return i;
             }
         }
         return -1;
     }
 
-    inline int sqlite_cursor::get_column_count() const {
-        return sqlite3_column_count(*_stmt);
+    inline int sqlite_cursor::get_column_index(const std::string &column_name) const {
+        return get_column_index(column_name.c_str());
     }
 
-    inline sqlite_cursor::sqlite_cursor(sqlite3_stmt **stmt) : _stmt(stmt) {
+    inline int sqlite_cursor::get_column_count() const {
+        return sqlite3_column_count(_stmt);
+    }
+
+    inline sqlite_cursor::sqlite_cursor(sqlite3_stmt *stmt) : _stmt(stmt) {
     }
 
 #pragma mark ## sqlite_iterator ##
@@ -928,39 +950,35 @@ namespace scandium {
     inline sqlite_iterator::sqlite_iterator(sqlite_iterator &&other) noexcept : _db(other._db),
                                                                                 _stmt(other._stmt),
                                                                                 _cursor(other._stmt),
-                                                                                _rowIndex(other._rowIndex),
+                                                                                _row_index(other._row_index),
                                                                                 _state(other._state) {
         other._db = nullptr;
         other._stmt = nullptr;
-        other._rowIndex = -1;
-        other._state = SQLITE_DONE;
+        other._row_index = -1;
+        other._state = -1;
     }
 
     inline sqlite_iterator &sqlite_iterator::operator=(sqlite_iterator &&other) noexcept {
         _db = other._db;
         _stmt = other._stmt;
-        _rowIndex = other._rowIndex;
+        _row_index = other._row_index;
         _state = other._state;
 
         other._db = nullptr;
         other._stmt = nullptr;
-        other._rowIndex = -1;
-        other._state = SQLITE_DONE;
+        other._row_index = -1;
+        other._state = -1;
         return *this;
     }
 
     inline sqlite_iterator &sqlite_iterator::operator++() {
-        _state = sqlite3_step(*_stmt);
-        while (_state == SQLITE_BUSY) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(_db->get_busy_waiting_interval_ms()));
-            _state = sqlite3_step(*_stmt);
-        }
+        _state = sqlite3_step(_stmt);
 
         if (_state != SQLITE_ROW && _state != SQLITE_DONE) {
             throw sqlite_exception("Failed to step statement", _state);
         }
 
-        _rowIndex++;
+        _row_index++;
         return *this;
     }
 
@@ -968,15 +986,23 @@ namespace scandium {
         return _cursor;
     }
 
+    inline sqlite_cursor *sqlite_iterator::operator->() {
+        return &_cursor;
+    }
+
     inline bool sqlite_iterator::operator==(const sqlite_iterator &other) const {
-        if (_state == other._state) {
-            if (_state == SQLITE_DONE) {
-                return true;
-            } else {
-                return _rowIndex == other._rowIndex;
-            }
+        if (_state == SQLITE_DONE && other._state == -1) {
+            return true;
         }
-        return false;
+
+        if (_state == -1 && other._state == SQLITE_DONE) {
+            return true;
+        }
+
+        return _db == other._db
+                && _stmt == other._stmt
+                && _row_index == other._row_index
+                && _state == other._state;
     }
 
     inline bool sqlite_iterator::operator!=(const sqlite_iterator &other) const {
@@ -984,27 +1010,35 @@ namespace scandium {
     }
 
     inline sqlite_iterator::sqlite_iterator()
-            : _db(nullptr), _stmt(nullptr), _cursor(_stmt), _rowIndex(-1), _state(SQLITE_DONE) {
+            : _db(nullptr), _stmt(nullptr), _cursor(nullptr), _row_index(0), _state(-1) {
     }
 
-    inline sqlite_iterator::sqlite_iterator(sqlite_database *db, sqlite3_stmt **stmt)
-            : _db(db), _stmt(stmt), _cursor(_stmt), _rowIndex(-1) {
-        ++(*this);
+    inline sqlite_iterator::sqlite_iterator(sqlite3 *db, sqlite3_stmt *stmt, std::uint_fast64_t row_index, int state)
+            : _db(db), _stmt(stmt), _cursor(stmt), _row_index(row_index), _state(state) {
     }
 
 #pragma mark ## sqlite_result_set ##
 
     inline sqlite_iterator sqlite_result_set::begin() {
-        _statement.reset();
-        return sqlite_iterator(_db, _statement.handle());
+        auto rc = sqlite3_reset(_stmt);
+        if (rc != SQLITE_OK) {
+            throw sqlite_exception("Failed to reset statement", rc);
+        }
+
+        rc = sqlite3_step(_stmt);
+        if (rc != SQLITE_ROW && rc != SQLITE_DONE) {
+            throw sqlite_exception("Failed to step statement", rc);
+        }
+
+        return sqlite_iterator(_db, _stmt, 0, rc);
     }
 
     inline sqlite_iterator sqlite_result_set::end() {
         return sqlite_iterator();
     }
 
-    inline sqlite_result_set::sqlite_result_set(sqlite_database *db, sqlite_statement &&statement)
-            : _db(db), _statement(std::move(statement)) {
+    inline sqlite_result_set::sqlite_result_set(sqlite3 *db, sqlite3_stmt *stmt)
+            : _db(db), _stmt(stmt) {
     }
 
 #pragma mark ## sqlite_transaction ##
@@ -1081,13 +1115,14 @@ namespace scandium {
         }
     }
 
+#ifdef SQLITE_HAS_CODEC
+
     inline void sqlite_database::open(const std::string &passphrase) {
         open();
-
-#ifdef SQLITE_HAS_CODEC
-        sqlite3_key(_db, passphrase.c_str(), passphrase.length());
-#endif
+        sqlite3_key(_db, passphrase.c_str(), static_cast<int>(passphrase.length()));
     }
+
+#endif
 
     inline void sqlite_database::close() {
         auto rc = close_internal();
@@ -1097,14 +1132,14 @@ namespace scandium {
     }
 
     inline void sqlite_database::exec_sql(const std::string &sql) {
-        sqlite_statement statement(this, sql);
+        sqlite_statement statement(_db, sql);
         statement.exec();
         statement.finalize();
     }
 
     template<class... ArgType>
     void sqlite_database::exec_sql(const std::string &sql, ArgType &&... bind_args) {
-        sqlite_statement statement(this, sql);
+        sqlite_statement statement(_db, sql);
         statement.bind_values(std::forward<ArgType>(bind_args)...);
         statement.exec();
         statement.finalize();
@@ -1124,18 +1159,23 @@ namespace scandium {
     }
 
     inline sqlite_result_set sqlite_database::query(const std::string &sql) {
-        return sqlite_result_set(this, sqlite_statement(this, sql));
+        sqlite3_stmt *stmt;
+        auto rc = sqlite3_prepare_v2(_db, sql.c_str(), static_cast<int>(sql.length()), &stmt, nullptr);
+        if (rc != SQLITE_OK) {
+            throw sqlite_exception("Failed to prepare statement, SQL = \"" + sql + "\"", rc);
+        }
+        return sqlite_result_set(_db, stmt);
     }
 
     template<class... ArgType>
     sqlite_result_set sqlite_database::query(const std::string &sql, ArgType &&... bind_args) {
-        sqlite_statement statement(this, sql);
-        statement.bind_values(std::forward<ArgType>(bind_args)...);
-        return sqlite_result_set(this, std::move(statement));
+        sqlite_statement statement(_db, sql);
+        //TODO: statement.bind_values(std::forward<ArgType>(bind_args)...);
+        return sqlite_result_set(_db, /* TODO: std::move(statement)*/ nullptr);
     }
 
     inline sqlite_statement sqlite_database::prepare_statement(const std::string &sql) {
-        return sqlite_statement(this, sql);
+        return sqlite_statement(_db, sql);
     }
 
     inline void sqlite_database::begin_transaction(sqlite_transaction_mode mode) {
@@ -1171,7 +1211,7 @@ namespace scandium {
     }
 
     inline bool sqlite_database::is_open() const {
-        return _db;
+        return _db != nullptr;
     }
 
     inline sqlite_transaction sqlite_database::create_transaction(sqlite_transaction_mode mode) {
@@ -1192,10 +1232,10 @@ namespace scandium {
     }
 
     inline int sqlite_database::get_version() {
-        sqlite_result_set query(this, sqlite_statement(this, "PRAGMA user_version;"));
+        auto &&results = query("PRAGMA user_version;");
 
         int result = 0;
-        for (auto &&cursor : query) {
+        for (auto &&cursor : results) {
             result = cursor.get<int>(0);
         }
 
@@ -1229,14 +1269,6 @@ namespace scandium {
         exec_sql(ss.str());
 
         transaction.commit();
-    }
-
-    int sqlite_database::get_busy_waiting_interval_ms() const {
-        return _busy_waiting_interval_ms;
-    }
-
-    void sqlite_database::set_busy_waiting_interval_ms(int ms) {
-        _busy_waiting_interval_ms = ms;
     }
 
     inline const std::string &sqlite_database::get_path() const {
@@ -1273,10 +1305,4 @@ namespace scandium {
         }
         return rc;
     }
-
-    inline sqlite3 *sqlite_database::handle() const {
-        return _db;
-    }
 }
-
-#endif //SCANDIUM_H
