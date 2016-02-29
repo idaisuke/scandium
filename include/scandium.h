@@ -36,8 +36,9 @@
 
 #include "sqlite3.h"
 
-//TODO: blobをtextからblobに先頭バイトにサイズを埋め込む?
+//TODO: blobをtextからblobにする(先頭バイトにサイズを埋め込む?)
 //TODO: blob64, null
+//TODO: テストコード
 
 namespace scandium {
 
@@ -1068,11 +1069,13 @@ namespace scandium {
 
     template<>
     inline const unsigned char *cursor::get(int column_index) const {
+        // TODO: delete
         return sqlite3_column_text(_stmt_holder->handle(), column_index);
     }
 
     template<>
     inline const char *cursor::get(int column_index) const {
+        // TODO: delete
         return reinterpret_cast<const char *>(sqlite3_column_text(_stmt_holder->handle(), column_index));
     }
 
