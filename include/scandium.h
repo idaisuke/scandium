@@ -1092,8 +1092,8 @@ namespace scandium {
     template<>
     inline blob cursor::get(int column_index) const {
         blob blob;
-        blob.data = sqlite3_column_text(_stmt_holder->handle(), column_index);
-        blob.size = static_cast<int>(std::strlen(reinterpret_cast<const char *>(blob.data)) - 1);
+        blob.data = sqlite3_column_blob(_stmt_holder->handle(), column_index);
+        blob.size = sqlite3_column_bytes(_stmt_holder->handle(), column_index);
         return blob;
     }
 
