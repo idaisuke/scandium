@@ -78,13 +78,15 @@ namespace scandium {
      */
     class sqlite_error : public std::runtime_error {
     public:
-        sqlite_error(const char *what, int rc);
+        sqlite_error(const char *what, sqlite3 *db, int rc);
 
-        sqlite_error(const std::string &what, int rc);
+        sqlite_error(const std::string &what, sqlite3 *db, int rc);
 
         int result_code() const;
 
     private:
+        std::string create_error_message(const std::string &what, sqlite3 *db, int rc) const;
+
         const int _rc;
     };
 
@@ -139,7 +141,12 @@ namespace scandium {
         /**
          *  Returns the underlying sqlite3 handle.
          */
-        sqlite3 *handle() const;
+        sqlite3 *get_handle() const;
+
+        /**
+         *  Returns the underlying sqlite3 handle.
+         */
+        sqlite3 *get_handle_noexcept() const noexcept;
 
     private:
         sqlite3 *_db;
@@ -153,7 +160,7 @@ namespace scandium {
         /*
          *  Constructor.
          */
-        sqlite_stmt_holder(sqlite3_stmt *stmt) noexcept;
+        sqlite_stmt_holder(sqlite3_stmt *stmt, const std::shared_ptr<sqlite_holder> &db_holder) noexcept;
 
         /**
          *  Destructor.
@@ -196,9 +203,15 @@ namespace scandium {
         /**
          *  Returns the underlying sqlite3_stmt handle.
          */
-        sqlite3_stmt *handle() const;
+        sqlite3_stmt *get_handle() const;
+
+        /**
+         *  Returns the underlying sqlite3_stmt handle.
+         */
+        sqlite3_stmt *get_handle_noexcept() const noexcept;
 
     private:
+        std::weak_ptr<sqlite_holder> _db_holder;
         sqlite3_stmt *_stmt;
     };
 
@@ -682,14 +695,25 @@ namespace scandium {
 
 #pragma mark ## sqlite_error ##
 
-    inline sqlite_error::sqlite_error(const char *what, int rc) : std::runtime_error(what), _rc(rc) {
+    inline sqlite_error::sqlite_error(const char *what, sqlite3 *db, int rc) : std::runtime_error(what), _rc(rc) {
     }
 
-    inline sqlite_error::sqlite_error(const std::string &what, int rc) : std::runtime_error(what), _rc(rc) {
+    inline sqlite_error::sqlite_error(const std::string &what, sqlite3 *db, int rc) : std::runtime_error(what),
+                                                                                      _rc(rc) {
     }
 
     inline int sqlite_error::result_code() const {
         return _rc;
+    }
+
+    inline std::string sqlite_error::create_error_message(const std::string &what, sqlite3 *db, int rc) const {
+        std::stringstream ss;
+        ss << what;
+
+        if (db) {
+            ss << ", reason: " << sqlite3_errmsg(db);
+        }
+
     }
 
 #pragma mark ## sqlite_holder ##
@@ -710,7 +734,7 @@ namespace scandium {
 
         auto rc = sqlite3_close_v2(_db);
         if (rc != SQLITE_OK) {
-            throw sqlite_error("Failed to close database", rc);
+            throw sqlite_error("Failed to close database", rc, _db);
         }
 
         _db = nullptr;
@@ -722,19 +746,19 @@ namespace scandium {
 
     inline void sqlite_holder::exec_sql(const std::string &sql) {
         sqlite3_stmt *stmt;
-        auto rc = sqlite3_prepare_v2(handle(), sql.c_str(), static_cast<int>(sql.length()), &stmt, nullptr);
+        auto rc = sqlite3_prepare_v2(get_handle(), sql.c_str(), static_cast<int>(sql.length()), &stmt, nullptr);
         if (rc != SQLITE_OK) {
-            throw sqlite_error("Failed to prepare statement, SQL = \"" + sql + "\"", rc);
+            throw sqlite_error("Failed to prepare statement, SQL = \"" + sql + "\"", _db, rc);
         }
 
         rc = sqlite3_step(stmt);
         if (rc != SQLITE_ROW && rc != SQLITE_DONE) {
-            throw sqlite_error("Failed to step statement", rc);
+            throw sqlite_error("Failed to step statement", _db, rc);
         }
 
         rc = sqlite3_finalize(stmt);
         if (rc != SQLITE_OK) {
-            throw sqlite_error("Failed to finalize statement", rc);
+            throw sqlite_error("Failed to finalize statement", _db, rc);
         }
     }
 
@@ -765,16 +789,24 @@ namespace scandium {
         exec_sql("ROLLBACK;");
     }
 
-    inline sqlite3 *sqlite_holder::handle() const {
+    inline sqlite3 *sqlite_holder::get_handle() const {
         if (_db == nullptr) {
             throw std::logic_error("database is closed");
         }
         return _db;
     }
 
+    inline sqlite3 *sqlite_holder::get_handle_noexcept() const noexcept {
+        return _db;
+    }
+
 #pragma mark ## sqlite_stmt_holder ##
 
-    inline sqlite_stmt_holder::sqlite_stmt_holder(sqlite3_stmt *stmt) noexcept : _stmt(stmt) {
+    inline sqlite_stmt_holder::sqlite_stmt_holder(
+            sqlite3_stmt *stmt,
+            const std::shared_ptr<sqlite_holder> &db_holder) noexcept
+            : _stmt(stmt),
+              _db_holder(db_holder) {
     }
 
     inline sqlite_stmt_holder::~sqlite_stmt_holder() noexcept {
@@ -796,7 +828,7 @@ namespace scandium {
     }
 
     inline void sqlite_stmt_holder::step() {
-        auto rc = sqlite3_step(handle());
+        auto rc = sqlite3_step(get_handle());
         if (rc != SQLITE_ROW && rc != SQLITE_DONE) {
             throw sqlite_error("Failed to step statement", rc);
         }
@@ -807,7 +839,7 @@ namespace scandium {
 
     template<class... ArgType>
     void sqlite_stmt_holder::bind_values(int index, int first_arg, ArgType &&... bind_args) {
-        auto rc = sqlite3_bind_int(handle(), index, first_arg);
+        auto rc = sqlite3_bind_int(get_handle(), index, first_arg);
         if (rc != SQLITE_OK) {
             throw sqlite_error("Failed to bind int", rc);
         }
@@ -816,7 +848,7 @@ namespace scandium {
 
     template<class... ArgType>
     void sqlite_stmt_holder::bind_values(int index, sqlite3_int64 first_arg, ArgType &&... bind_args) {
-        auto rc = sqlite3_bind_int64(handle(), index, first_arg);
+        auto rc = sqlite3_bind_int64(get_handle(), index, first_arg);
         if (rc != SQLITE_OK) {
             throw sqlite_error("Failed to bind int64", rc);
         }
@@ -825,7 +857,7 @@ namespace scandium {
 
     template<class... ArgType>
     void sqlite_stmt_holder::bind_values(int index, double first_arg, ArgType &&... bind_args) {
-        auto rc = sqlite3_bind_double(handle(), index, first_arg);
+        auto rc = sqlite3_bind_double(get_handle(), index, first_arg);
         if (rc != SQLITE_OK) {
             throw sqlite_error("Failed to bind double", rc);
         }
@@ -834,8 +866,8 @@ namespace scandium {
 
     template<class... ArgType>
     void sqlite_stmt_holder::bind_values(int index, std::string first_arg, ArgType &&... bind_args) {
-        auto rc = sqlite3_bind_text(handle(), index, first_arg.c_str(), static_cast<int>(first_arg.length()),
-                SQLITE_TRANSIENT);
+        auto rc = sqlite3_bind_text(get_handle(), index, first_arg.c_str(), static_cast<int>(first_arg.length()),
+                                    SQLITE_TRANSIENT);
         if (rc != SQLITE_OK) {
             throw sqlite_error("Failed to bind text", rc);
         }
@@ -844,8 +876,8 @@ namespace scandium {
 
     template<class... ArgType>
     void sqlite_stmt_holder::bind_values(int index, const char *first_arg, ArgType &&... bind_args) {
-        auto rc = sqlite3_bind_text(handle(), index, first_arg, static_cast<int>(std::strlen(first_arg)),
-                SQLITE_TRANSIENT);
+        auto rc = sqlite3_bind_text(get_handle(), index, first_arg, static_cast<int>(std::strlen(first_arg)),
+                                    SQLITE_TRANSIENT);
         if (rc != SQLITE_OK) {
             throw sqlite_error("Failed to bind text", rc);
         }
@@ -854,17 +886,21 @@ namespace scandium {
 
     template<class... ArgType>
     void sqlite_stmt_holder::bind_values(int index, blob first_arg, ArgType &&... bind_args) {
-        auto rc = sqlite3_bind_blob(handle(), index, first_arg.data, first_arg.size, SQLITE_TRANSIENT);
+        auto rc = sqlite3_bind_blob(get_handle(), index, first_arg.data, first_arg.size, SQLITE_TRANSIENT);
         if (rc != SQLITE_OK) {
             throw sqlite_error("Failed to bind blob", rc);
         }
         bind_values(index + 1, std::forward<ArgType>(bind_args)...);
     }
 
-    inline sqlite3_stmt *sqlite_stmt_holder::handle() const {
+    inline sqlite3_stmt *sqlite_stmt_holder::get_handle() const {
         if (_stmt == nullptr) {
             throw std::logic_error("statement is finalized");
         }
+        return _stmt;
+    }
+
+    inline sqlite3_stmt *sqlite_stmt_holder::get_handle_noexcept() const noexcept {
         return _stmt;
     }
 
@@ -894,7 +930,6 @@ namespace scandium {
         clear_bindings();
         bind_values(std::forward<ArgType>(bind_args)...);
         exec();
-        finalize();
     }
 
     inline result_set statement::query() {
@@ -914,49 +949,51 @@ namespace scandium {
     }
 
     inline void statement::bind(int index, int value) {
-        auto rc = sqlite3_bind_int(_stmt_holder->handle(), index, value);
+        auto rc = sqlite3_bind_int(_stmt_holder->get_handle(), index, value);
         if (rc != SQLITE_OK) {
-            throw sqlite_error("Failed to bind int", rc);
+            throw sqlite_error("Failed to bind int", _db_holder->get_handle_noexcept(), rc);
         }
     }
 
     inline void statement::bind(int index, sqlite3_int64 value) {
-        auto rc = sqlite3_bind_int64(_stmt_holder->handle(), index, value);
+        auto rc = sqlite3_bind_int64(_stmt_holder->get_handle(), index, value);
         if (rc != SQLITE_OK) {
-            throw sqlite_error("Failed to bind int64", rc);
+            throw sqlite_error("Failed to bind int64", _db_holder->get_handle_noexcept(), rc);
         }
     }
 
     inline void statement::bind(int index, double value) {
-        auto rc = sqlite3_bind_double(_stmt_holder->handle(), index, value);
+        auto rc = sqlite3_bind_double(_stmt_holder->get_handle(), index, value);
         if (rc != SQLITE_OK) {
-            throw sqlite_error("Failed to bind double", rc);
+            throw sqlite_error("Failed to bind double", _db_holder->get_handle_noexcept(), rc);
         }
     }
 
     inline void statement::bind(int index, const std::string &value) {
-        auto rc = sqlite3_bind_text(_stmt_holder->handle(), index, value.c_str(), static_cast<int>(value.length()), SQLITE_TRANSIENT);
+        auto rc = sqlite3_bind_text(_stmt_holder->get_handle(), index, value.c_str(), static_cast<int>(value.length()),
+                                    SQLITE_TRANSIENT);
         if (rc != SQLITE_OK) {
-            throw sqlite_error("Failed to bind text", rc);
+            throw sqlite_error("Failed to bind text", _db_holder->get_handle_noexcept(), rc);
         }
     }
 
     inline void statement::bind(int index, const char *value) {
-        auto rc = sqlite3_bind_text(_stmt_holder->handle(), index, value, static_cast<int>(std::strlen(value)), SQLITE_TRANSIENT);
+        auto rc = sqlite3_bind_text(_stmt_holder->get_handle(), index, value, static_cast<int>(std::strlen(value)),
+                                    SQLITE_TRANSIENT);
         if (rc != SQLITE_OK) {
-            throw sqlite_error("Failed to bind text", rc);
+            throw sqlite_error("Failed to bind text", _db_holder->get_handle_noexcept(), rc);
         }
     }
 
     inline void statement::bind(int index, blob value) {
-        auto rc = sqlite3_bind_blob(_stmt_holder->handle(), index, value.data, value.size, SQLITE_TRANSIENT);
+        auto rc = sqlite3_bind_blob(_stmt_holder->get_handle(), index, value.data, value.size, SQLITE_TRANSIENT);
         if (rc != SQLITE_OK) {
-            throw sqlite_error("Failed to bind blob", rc);
+            throw sqlite_error("Failed to bind blob", _db_holder->get_handle_noexcept(), rc);
         }
     }
 
     inline void statement::bind(const std::string &parameter_name, int value) {
-        auto index = sqlite3_bind_parameter_index(_stmt_holder->handle(), parameter_name.c_str());
+        auto index = sqlite3_bind_parameter_index(_stmt_holder->get_handle(), parameter_name.c_str());
         if (index == 0) {
             std::string what;
             what.append("No matching parameter named '");
@@ -969,7 +1006,7 @@ namespace scandium {
     }
 
     inline void statement::bind(const std::string &parameter_name, sqlite3_int64 value) {
-        auto index = sqlite3_bind_parameter_index(_stmt_holder->handle(), parameter_name.c_str());
+        auto index = sqlite3_bind_parameter_index(_stmt_holder->get_handle(), parameter_name.c_str());
         if (index == 0) {
             std::string what;
             what.append("No matching parameter named '");
@@ -982,7 +1019,7 @@ namespace scandium {
     }
 
     inline void statement::bind(const std::string &parameter_name, double value) {
-        auto index = sqlite3_bind_parameter_index(_stmt_holder->handle(), parameter_name.c_str());
+        auto index = sqlite3_bind_parameter_index(_stmt_holder->get_handle(), parameter_name.c_str());
         if (index == 0) {
             std::string what;
             what.append("No matching parameter named '");
@@ -995,7 +1032,7 @@ namespace scandium {
     }
 
     inline void statement::bind(const std::string &parameter_name, const std::string &value) {
-        auto index = sqlite3_bind_parameter_index(_stmt_holder->handle(), parameter_name.c_str());
+        auto index = sqlite3_bind_parameter_index(_stmt_holder->get_handle(), parameter_name.c_str());
         if (index == 0) {
             std::string what;
             what.append("No matching parameter named '");
@@ -1008,7 +1045,7 @@ namespace scandium {
     }
 
     inline void statement::bind(const std::string &parameter_name, const char *value) {
-        auto index = sqlite3_bind_parameter_index(_stmt_holder->handle(), parameter_name.c_str());
+        auto index = sqlite3_bind_parameter_index(_stmt_holder->get_handle(), parameter_name.c_str());
         if (index == 0) {
             std::string what;
             what.append("No matching parameter named '");
@@ -1021,7 +1058,7 @@ namespace scandium {
     }
 
     inline void statement::bind(const std::string &parameter_name, blob value) {
-        auto index = sqlite3_bind_parameter_index(_stmt_holder->handle(), parameter_name.c_str());
+        auto index = sqlite3_bind_parameter_index(_stmt_holder->get_handle(), parameter_name.c_str());
         if (index == 0) {
             std::string what;
             what.append("No matching parameter named '");
@@ -1034,66 +1071,68 @@ namespace scandium {
     }
 
     inline void statement::clear_bindings() {
-        auto rc = sqlite3_clear_bindings(_stmt_holder->handle());
+        auto rc = sqlite3_clear_bindings(_stmt_holder->get_handle());
         if (rc != SQLITE_OK) {
-            throw sqlite_error("Failed to clear bindings", rc);
+            throw sqlite_error("Failed to clear bindings", _db_holder->get_handle_noexcept(), rc);
         }
     }
 
     inline statement::statement(std::shared_ptr<sqlite_holder> db_holder, const std::string &sql)
             : _db_holder(std::move(db_holder)) {
         sqlite3_stmt *stmt;
-        auto rc = sqlite3_prepare_v2(_db_holder->handle(), sql.c_str(), static_cast<int>(sql.length()), &stmt, nullptr);
+        auto rc = sqlite3_prepare_v2(_db_holder->get_handle(), sql.c_str(), static_cast<int>(sql.length()), &stmt,
+                                     nullptr);
         if (rc != SQLITE_OK) {
-            throw sqlite_error("Failed to prepare statement, SQL = \"" + sql + "\"", rc);
+            throw sqlite_error("Failed to prepare statement, SQL = \"" + sql + "\"", _db_holder->get_handle_noexcept(),
+                               rc);
         }
-        _stmt_holder = std::make_shared<sqlite_stmt_holder>(stmt);
+        _stmt_holder = std::make_shared<sqlite_stmt_holder>(stmt, _db_holder);
     }
 
 #pragma mark ## cursor ##
 
     template<>
     inline int cursor::get(int column_index) const {
-        return sqlite3_column_int(_stmt_holder->handle(), column_index);
+        return sqlite3_column_int(_stmt_holder->get_handle(), column_index);
     }
 
     template<>
     inline sqlite3_int64 cursor::get(int column_index) const {
-        return sqlite3_column_int64(_stmt_holder->handle(), column_index);
+        return sqlite3_column_int64(_stmt_holder->get_handle(), column_index);
     }
 
     template<>
     inline double cursor::get(int column_index) const {
-        return sqlite3_column_double(_stmt_holder->handle(), column_index);
+        return sqlite3_column_double(_stmt_holder->get_handle(), column_index);
     }
 
     template<>
     inline const unsigned char *cursor::get(int column_index) const {
         // TODO: delete
-        return sqlite3_column_text(_stmt_holder->handle(), column_index);
+        return sqlite3_column_text(_stmt_holder->get_handle(), column_index);
     }
 
     template<>
     inline const char *cursor::get(int column_index) const {
         // TODO: delete
-        return reinterpret_cast<const char *>(sqlite3_column_text(_stmt_holder->handle(), column_index));
+        return reinterpret_cast<const char *>(sqlite3_column_text(_stmt_holder->get_handle(), column_index));
     }
 
     template<>
     inline std::string cursor::get(int column_index) const {
-        return reinterpret_cast<const char *>(sqlite3_column_text(_stmt_holder->handle(), column_index));
+        return reinterpret_cast<const char *>(sqlite3_column_text(_stmt_holder->get_handle(), column_index));
     }
 
     template<>
     inline const void *cursor::get(int column_index) const {
-        return sqlite3_column_blob(_stmt_holder->handle(), column_index);
+        return sqlite3_column_blob(_stmt_holder->get_handle(), column_index);
     }
 
     template<>
     inline blob cursor::get(int column_index) const {
         blob blob;
-        blob.data = sqlite3_column_blob(_stmt_holder->handle(), column_index);
-        blob.size = sqlite3_column_bytes(_stmt_holder->handle(), column_index);
+        blob.data = sqlite3_column_blob(_stmt_holder->get_handle(), column_index);
+        blob.size = sqlite3_column_bytes(_stmt_holder->get_handle(), column_index);
         return blob;
     }
 
@@ -1111,12 +1150,12 @@ namespace scandium {
     }
 
     inline std::string cursor::get_column_name(int column_index) const {
-        return sqlite3_column_name(_stmt_holder->handle(), column_index);
+        return sqlite3_column_name(_stmt_holder->get_handle(), column_index);
     }
 
     inline int cursor::get_column_index(const char *column_name) const {
-        for (int i = 0, n = sqlite3_column_count(_stmt_holder->handle()); i < n; ++i) {
-            if (0 == std::strcmp(sqlite3_column_name(_stmt_holder->handle(), i), column_name)) {
+        for (int i = 0, n = sqlite3_column_count(_stmt_holder->get_handle()); i < n; ++i) {
+            if (0 == std::strcmp(sqlite3_column_name(_stmt_holder->get_handle(), i), column_name)) {
                 return i;
             }
         }
@@ -1128,7 +1167,7 @@ namespace scandium {
     }
 
     inline int cursor::get_column_count() const {
-        return sqlite3_column_count(_stmt_holder->handle());
+        return sqlite3_column_count(_stmt_holder->get_handle());
     }
 
     inline cursor::cursor(const std::shared_ptr<sqlite_stmt_holder> &stmt_holder)
@@ -1138,10 +1177,10 @@ namespace scandium {
 #pragma mark ## iterator ##
 
     inline iterator::iterator(iterator &&other) noexcept : _db_holder(std::move(other._db_holder)),
-                                                                                _stmt_holder(std::move(other._stmt_holder)),
-                                                                                _cursor(std::move(other._cursor)),
-                                                                                _row_index(other._row_index),
-                                                                                _state(other._state) {
+                                                           _stmt_holder(std::move(other._stmt_holder)),
+                                                           _cursor(std::move(other._cursor)),
+                                                           _row_index(other._row_index),
+                                                           _state(other._state) {
     }
 
     inline iterator &iterator::operator=(iterator &&other) noexcept {
@@ -1155,7 +1194,7 @@ namespace scandium {
     }
 
     inline iterator &iterator::operator++() {
-        _state = sqlite3_step(_stmt_holder->handle());
+        _state = sqlite3_step(_stmt_holder->get_handle());
 
         if (_state != SQLITE_ROW && _state != SQLITE_DONE) {
             throw sqlite_error("Failed to step statement", _state);
@@ -1183,9 +1222,9 @@ namespace scandium {
         }
 
         return _db_holder == other._db_holder
-                && _stmt_holder == other._stmt_holder
-                && _row_index == other._row_index
-                && _state == other._state;
+               && _stmt_holder == other._stmt_holder
+               && _row_index == other._row_index
+               && _state == other._state;
     }
 
     inline bool iterator::operator!=(const iterator &other) const {
@@ -1211,12 +1250,12 @@ namespace scandium {
 #pragma mark ## result_set ##
 
     inline iterator result_set::begin() {
-        auto rc = sqlite3_reset(_stmt_holder->handle());
+        auto rc = sqlite3_reset(_stmt_holder->get_handle());
         if (rc != SQLITE_OK) {
             throw sqlite_error("Failed to reset statement", rc);
         }
 
-        rc = sqlite3_step(_stmt_holder->handle());
+        rc = sqlite3_step(_stmt_holder->get_handle());
         if (rc != SQLITE_ROW && rc != SQLITE_DONE) {
             throw sqlite_error("Failed to step statement", rc);
         }
@@ -1282,7 +1321,7 @@ namespace scandium {
     }
 
     inline database::database(database &&other) noexcept : _path(std::move(other._path)),
-                                                                                _db_holder(std::move(other._db_holder)) {
+                                                           _db_holder(std::move(other._db_holder)) {
     }
 
     inline database &database::operator=(database &&other) noexcept {
@@ -1305,7 +1344,7 @@ namespace scandium {
 
     inline void database::open(const std::string &passphrase) {
         open();
-        sqlite3_key(_db_holder->handle(), passphrase.c_str(), static_cast<int>(passphrase.length()));
+        sqlite3_key(_db_holder->get_handle(), passphrase.c_str(), static_cast<int>(passphrase.length()));
     }
 
 #endif
@@ -1385,7 +1424,7 @@ namespace scandium {
 
         auto transaction = create_transaction(mode);
 
-        if (_before_upgrade_user_version) {
+        if (old_version < version && _before_upgrade_user_version) {
             _before_upgrade_user_version(this, old_version, version);
         }
 

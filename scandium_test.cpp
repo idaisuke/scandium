@@ -20,8 +20,6 @@ void test_scandium() {
     {
         auto transaction = db.create_transaction();
 
-        db.exec_sql("CREATE TABLE chara(id INTEGER, name TEXT);");
-
         auto stmt = db.prepare_statement("INSERT INTO chara VALUES(?, ?);");
 
         stmt.exec_with_bindings(1, "キャラX");
