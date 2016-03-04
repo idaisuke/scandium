@@ -1,13 +1,25 @@
-#define BOOST_TEST_DYN_LINK
-#define BOOST_TEST_MAIN
-#define BOOST_TEST_MODULE scandium
+#define BOOST_TEST_NO_LIB
+#define BOOST_TEST_NO_MAIN
+#define BOOST_TEST_MODULE test_scandium
 
 #include <boost/lexical_cast.hpp>
-//#include <boost/test/unit_test.hpp>
 #include <boost/test/included/unit_test.hpp>
 #include <boost/uuid/random_generator.hpp>
 #include <boost/uuid/uuid_io.hpp>
 #include "scandium.h"
+
+int test_scandium(int argc, char **argv) {
+    extern ::boost::unit_test::test_suite *init_unit_test_suite(int, char **);
+
+    boost::unit_test::init_unit_test_func init_func = &init_unit_test_suite;
+
+    if (argc && argv) {
+        return ::boost::unit_test::unit_test_main(init_func, argc, argv);
+    } else {
+        const char *argv2[] = {"test_scandium"};
+        return ::boost::unit_test::unit_test_main(init_func, 1, const_cast<char **>(argv2));
+    }
+}
 
 std::string create_random_name() {
     boost::uuids::random_generator gen;
