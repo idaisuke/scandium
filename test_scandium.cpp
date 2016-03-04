@@ -14,16 +14,6 @@ std::string create_random_name() {
     return "./" + boost::lexical_cast<std::string>(gen());
 }
 
-bool is_exeption_thrown(std::function<void ()> action) {
-    auto ret = false;
-    try {
-        action();
-    } catch (...) {
-        ret = true;
-    }
-    return ret;
-}
-
 BOOST_AUTO_TEST_CASE(open_close) {
     auto path = create_random_name();
     scandium::database db(path);
@@ -60,7 +50,7 @@ BOOST_AUTO_TEST_CASE(open_close) {
 BOOST_AUTO_TEST_CASE(exec_sql_query) {
     scandium::database db(create_random_name());
     db.open();
-    
+
     db.exec_sql("CREATE TABLE table_1(id INTEGER, name TEXT);");
     db.exec_sql("INSERT INTO table_1 VALUES(2, 'name 1');");
     db.exec_sql("INSERT INTO table_1 VALUES(4, 'name 2');");
@@ -189,7 +179,7 @@ BOOST_AUTO_TEST_CASE(statement) {
             'a', 'b', 'c', '\0', 'd', 'e', 'f', 'g', '\0',
     };
 
-    scandium::blob orig_blob {
+    scandium::blob orig_blob{
             .size = static_cast<int>(orig_vec.size()),
             .data = orig_vec.data(),
     };
@@ -230,31 +220,38 @@ BOOST_AUTO_TEST_CASE(statement) {
         std::string str999("999");
         statement.exec_with_bindings(9, str999);
 
-        statement.exec_with_bindings(10, orig_vec);
+        statement.bind(1, 10);
+        statement.bind(2, orig_vec);
+        statement.exec();
 
-        statement.exec_with_bindings(11, orig_blob);
+        statement.bind(1, 11);
+        statement.bind(2, orig_blob);
+        statement.exec();
 
         statement.bind(1, 12);
+        statement.bind(2, orig_blob.data, orig_blob.size);
+        statement.exec();
+
+        statement.exec_with_bindings(13, orig_vec);
+
+        statement.exec_with_bindings(14, orig_blob);
+
+        statement.bind(1, 15);
         statement.bind(2, 1);
         statement.exec();
 
-        statement.bind(1, 13);
+        statement.bind(1, 16);
         statement.bind(2, nullptr);
         statement.exec();
 
-        statement.exec_with_bindings(14, 1);
+        statement.exec_with_bindings(17, 1);
 
-        statement.exec_with_bindings(15, nullptr);
+        statement.exec_with_bindings(18, nullptr);
 
         statement.finalize();
 
-        auto is_error = is_exeption_thrown([&]{
-            statement.bind(1, 20);
-            statement.bind(2, 1);
-            statement.exec();
-        });
-
-        BOOST_CHECK_EQUAL(is_error, true);
+        BOOST_CHECK_THROW(statement.bind(1, 20), std::logic_error);
+        BOOST_CHECK_THROW(statement.exec(), std::logic_error);
     }
 
     {
@@ -299,16 +296,7 @@ BOOST_AUTO_TEST_CASE(statement) {
     BOOST_CHECK_EQUAL(it->get<std::string>(0), std::string("999"));
     ++it;
 
-    {
-        auto vec = it->get<std::vector<unsigned char>>(0);
-        BOOST_CHECK_EQUAL_COLLECTIONS(vec.begin(), vec.end(), orig_vec.begin(), orig_vec.end());
-        auto blob = it->get<scandium::blob>(0);
-        auto data = reinterpret_cast<const unsigned char *>(blob.data);
-        BOOST_CHECK_EQUAL_COLLECTIONS(data, data + blob.size, orig_vec.begin(), orig_vec.end());
-        ++it;
-    }
-
-    {
+    for (int i = 0; i < 5; ++i) {
         auto vec = it->get<std::vector<unsigned char>>(0);
         BOOST_CHECK_EQUAL_COLLECTIONS(vec.begin(), vec.end(), orig_vec.begin(), orig_vec.end());
         auto blob = it->get<scandium::blob>(0);

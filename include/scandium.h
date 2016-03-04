@@ -56,8 +56,19 @@ namespace scandium {
      *  Describes the SQLite transaction modes.
      */
     enum class transaction_mode {
+        /**
+         *  No locks are acquired on the database until the database is first accessed.
+         */
         deferred,
+
+        /**
+         *  Reserved locks are acquired on all databases as soon as the transaction began.
+         */
         immediate,
+
+        /**
+         *  Exclusive locks to be acquired on all databases.
+         */
         exclusive,
     };
 
@@ -110,13 +121,15 @@ namespace scandium {
 
         /**
          *  Executes the SQL statement that does not return data.
+         *
+         *  @param sql the SQL statement.
          */
         void exec_sql(const std::string &sql);
 
         /**
          *  Begins a transaction.
          *
-         *  @param mode transaction mode
+         *  @param mode the transaction mode
          */
         void begin_transaction(transaction_mode mode = transaction_mode::deferred);
 
@@ -313,6 +326,15 @@ namespace scandium {
         void bind(int index, const std::vector<unsigned char> &value);
 
         /**
+         *  Binds the blob value to the placeholder such as ? or ?NNN (NNN represents an integer literal).
+         *
+         *  @param index the one-based index or the index equivalent to NNN.
+         *  @param data  the blob value to bind to the placeholder.
+         *  @param size  the size of the blob value.
+         */
+        void bind(int index, const void *data, int size);
+
+        /**
          *  @copydoc statement::bind(int,int)
          */
         void bind(int index, std::nullptr_t);
@@ -320,7 +342,7 @@ namespace scandium {
         /**
          *  Binds the value to the placeholder such as :VVV, @VVV or $VVV (VVV represents an alphanumeric identifier).
          *
-         *  @tparam T int, sqlite3_int64, double, std::string, const char *, const void * or fe::blob.
+         *  @tparam T int, sqlite3_int64, double, std::string, const char *, std::vector<unsigned char> or scandium::blob.
          *
          *  @param parameter_name the parameter name equivalent to :VVV, @VVV or $VVV
          *  @param value          the value to bind to the placeholder
@@ -350,7 +372,7 @@ namespace scandium {
         /**
          *  Gets data from the current row.
          *
-         *  @tparam T int, sqlite3_int64, double, std::string, const char *, const void * or fe::blob.
+         *  @tparam T int, sqlite3_int64, double, std::string, const char *, std::vector<unsigned char> or scandium::blob.
          *
          *  @param column_index the zero-based column index.
          */
@@ -361,7 +383,7 @@ namespace scandium {
          *  Gets data for the given column name from the current row,
          *  or throws an exception if the column name does not exist.
          *
-         *  @tparam T int, sqlite3_int64, double, std::string, const char *, const void * or fe::blob.
+         *  @tparam T int, sqlite3_int64, double, std::string, const char *, std::vector<unsigned char> or scandium::blob.
          *
          *  @param column_name the column name.
          */
@@ -629,22 +651,22 @@ namespace scandium {
         /**
          *  Sets a callback to be called before an upgrade user version.
          *
-         *  @tparam CallbackType void(*)(database *db, int old_version, int new_version)
+         *  @tparam Callback void(*)(database *db, int old_version, int new_version)
          *
          *  @param callback the callback to be called before an upgrade user version.
          */
-        template<class CallbackType>
-        void set_before_upgrade_user_version(CallbackType &&callback);
+        template<class Callback>
+        void set_before_upgrade_user_version(Callback &&callback);
 
         /**
          *  Sets a callback to be called before a downgrade user version.
          *
-         *  @tparam CallbackType void(*)(database *db, int old_version, int new_version)
+         *  @tparam Callback void(*)(database *db, int old_version, int new_version)
          *
          *  @param callback the callback to be called before a downgrade user version.
          */
-        template<class CallbackType>
-        void set_before_downgrade_user_version(CallbackType &&callback);
+        template<class Callback>
+        void set_before_downgrade_user_version(Callback &&callback);
 
         /**
          *  Returns the file path of the database, or ":memory:" if the in-memory database.
@@ -989,6 +1011,13 @@ namespace scandium {
     inline void statement::bind(int index, const std::vector<unsigned char> &value) {
         auto rc = sqlite3_bind_blob(_stmt_holder->get(), index, value.data(), static_cast<int>(value.size()),
                                     SQLITE_TRANSIENT);
+        if (rc != SQLITE_OK) {
+            throw sqlite_error("failed to bind blob", rc);
+        }
+    }
+
+    inline void statement::bind(int index, const void *data, int size) {
+        auto rc = sqlite3_bind_blob(_stmt_holder->get(), index, data, size, SQLITE_TRANSIENT);
         if (rc != SQLITE_OK) {
             throw sqlite_error("failed to bind blob", rc);
         }
@@ -1373,14 +1402,14 @@ namespace scandium {
         transaction.commit();
     }
 
-    template<class CallbackType>
-    void database::set_before_upgrade_user_version(CallbackType &&callback) {
-        _before_upgrade_user_version = std::forward<CallbackType>(callback);
+    template<class Callback>
+    void database::set_before_upgrade_user_version(Callback &&callback) {
+        _before_upgrade_user_version = std::forward<Callback>(callback);
     }
 
-    template<class CallbackType>
-    void database::set_before_downgrade_user_version(CallbackType &&callback) {
-        _before_downgrade_user_version = std::forward<CallbackType>(callback);
+    template<class Callback>
+    void database::set_before_downgrade_user_version(Callback &&callback) {
+        _before_downgrade_user_version = std::forward<Callback>(callback);
     }
 
     inline const std::string &database::get_path() const {
