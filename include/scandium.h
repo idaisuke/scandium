@@ -36,10 +36,6 @@
 
 #include "sqlite3.h"
 
-//TODO: blobをtextからblobにする(先頭バイトにサイズを埋め込む?)
-//TODO: blob64, null
-//TODO: テストコード
-
 namespace scandium {
 
     class database;
@@ -52,16 +48,8 @@ namespace scandium {
      *  Represents a BLOB object of SQLite.
      */
     struct blob {
-        const void *data;
         int size;
-    };
-
-    /**
-     *  Represents a 64bit BLOB object of SQLite.
-     */
-    struct blob64 {
         const void *data;
-        sqlite3_uint64 size;
     };
 
     /**
@@ -208,13 +196,19 @@ namespace scandium {
         void bind_values(int index, double first_arg, ArgType &&... bind_args);
 
         template<class... ArgType>
-        void bind_values(int index, std::string first_arg, ArgType &&... bind_args);
+        void bind_values(int index, const std::string &first_arg, ArgType &&... bind_args);
 
         template<class... ArgType>
         void bind_values(int index, const char *first_arg, ArgType &&... bind_args);
 
         template<class... ArgType>
         void bind_values(int index, blob first_arg, ArgType &&... bind_args);
+
+        template<class... ArgType>
+        void bind_values(int index, const std::vector<unsigned char> &first_arg, ArgType &&... bind_args);
+
+        template<class... ArgType>
+        void bind_values(int index, std::nullptr_t, ArgType &&... bind_args);
 
         /**
          *  Returns the underlying sqlite3_stmt handle.
@@ -314,37 +308,25 @@ namespace scandium {
         void bind(int index, blob value);
 
         /**
+         *  @copydoc statement::bind(int,int)
+         */
+        void bind(int index, const std::vector<unsigned char> &value);
+
+        /**
+         *  @copydoc statement::bind(int,int)
+         */
+        void bind(int index, std::nullptr_t);
+
+        /**
          *  Binds the value to the placeholder such as :VVV, @VVV or $VVV (VVV represents an alphanumeric identifier).
          *
-         *  @param parameter_name the parameter name equivalent to VVV
+         *  @tparam T int, sqlite3_int64, double, std::string, const char *, const void * or fe::blob.
+         *
+         *  @param parameter_name the parameter name equivalent to :VVV, @VVV or $VVV
          *  @param value          the value to bind to the placeholder
          */
-        void bind(const std::string &parameter_name, int value);
-
-        /**
-         *  @copydoc statement::bind(const std::string &,int)
-         */
-        void bind(const std::string &parameter_name, sqlite3_int64 value);
-
-        /**
-         *  @copydoc statement::bind(const std::string &,int)
-         */
-        void bind(const std::string &parameter_name, double value);
-
-        /**
-         *  @copydoc statement::bind(const std::string &,int)
-         */
-        void bind(const std::string &parameter_name, const std::string &value);
-
-        /**
-         *  @copydoc statement::bind(const std::string &,int)
-         */
-        void bind(const std::string &parameter_name, const char *value);
-
-        /**
-         *  @copydoc statement::bind(const std::string &,int)
-         */
-        void bind(const std::string &parameter_name, blob value);
+        template<class T>
+        void bind(const std::string &parameter_name, T &&value);
 
         /**
          *  Removes all binding values.
@@ -387,6 +369,16 @@ namespace scandium {
         T get(const std::string &column_name) const;
 
         /**
+         *  Returns true if data from the current row is null, or false otherwise.
+         */
+        bool is_null(int column_index) const;
+
+        /**
+         *  Returns true if data for the given column name from the current row is null, or false otherwise.
+         */
+        bool is_null(const std::string &column_name) const;
+
+        /**
          *  Returns the column name at the given zero-based column index.
          *
          *  @param column_index the zero-based index.
@@ -423,10 +415,6 @@ namespace scandium {
      */
     class iterator : public std::iterator<std::forward_iterator_tag, cursor> {
     public:
-        iterator(iterator &&other) noexcept;
-
-        iterator &operator=(iterator &&other) noexcept;
-
         iterator &operator++();
 
         cursor &operator*();
@@ -442,16 +430,17 @@ namespace scandium {
 
         iterator(const std::shared_ptr<sqlite_stmt_holder> &stmt_holder,
                  std::uint_fast64_t row_index,
-                 int state);
-
-        iterator(const iterator &) = delete;
-
-        iterator &operator=(const iterator &) = delete;
+                 int rc);
 
         std::shared_ptr<sqlite_stmt_holder> _stmt_holder;
         cursor _cursor;
-        std::uint_fast64_t _row_index;
-        int _state;
+
+        struct state {
+            std::uint_fast64_t row_index;
+            int rc;
+        };
+
+        std::shared_ptr<state> _state;
 
         friend class result_set;
     };
@@ -623,6 +612,11 @@ namespace scandium {
          *  Begins a transaction, and Returns a RAII object.
          */
         transaction create_transaction(transaction_mode mode = transaction_mode::deferred);
+
+        /**
+         *  TODO:
+         */
+        void set_busy_timeout(int ms);
 
         /**
          *  Gets the user version of the database, or 0 that is a default value.
@@ -849,7 +843,7 @@ namespace scandium {
     }
 
     template<class... ArgType>
-    void sqlite_stmt_holder::bind_values(int index, std::string first_arg, ArgType &&... bind_args) {
+    void sqlite_stmt_holder::bind_values(int index, const std::string &first_arg, ArgType &&... bind_args) {
         auto rc = sqlite3_bind_text(get(), index, first_arg.c_str(), static_cast<int>(first_arg.length()),
                                     SQLITE_TRANSIENT);
         if (rc != SQLITE_OK) {
@@ -873,6 +867,25 @@ namespace scandium {
         auto rc = sqlite3_bind_blob(get(), index, first_arg.data, first_arg.size, SQLITE_TRANSIENT);
         if (rc != SQLITE_OK) {
             throw sqlite_error("failed to bind blob", rc);
+        }
+        bind_values(index + 1, std::forward<ArgType>(bind_args)...);
+    }
+
+    template<class... ArgType>
+    void sqlite_stmt_holder::bind_values(int index, const std::vector<unsigned char> &first_arg, ArgType &&... bind_args) {
+        auto rc = sqlite3_bind_blob(get(), index, first_arg.data(), static_cast<int>(first_arg.size()),
+                                    SQLITE_TRANSIENT);
+        if (rc != SQLITE_OK) {
+            throw sqlite_error("failed to bind blob", rc);
+        }
+        bind_values(index + 1, std::forward<ArgType>(bind_args)...);
+    }
+
+    template<class... ArgType>
+    void sqlite_stmt_holder::bind_values(int index, std::nullptr_t, ArgType &&... bind_args) {
+        auto rc = sqlite3_bind_null(get(), index);
+        if (rc != SQLITE_OK) {
+            throw sqlite_error("failed to bind null", rc);
         }
         bind_values(index + 1, std::forward<ArgType>(bind_args)...);
     }
@@ -970,82 +983,33 @@ namespace scandium {
         }
     }
 
-    inline void statement::bind(const std::string &parameter_name, int value) {
-        auto index = sqlite3_bind_parameter_index(_stmt_holder->get(), parameter_name.c_str());
-        if (index == 0) {
-            std::string what;
-            what.append("No matching parameter named '");
-            what.append(parameter_name);
-            what.append("' is found");
-            throw std::logic_error(what);
+    inline void statement::bind(int index, const std::vector<unsigned char> &value) {
+        auto rc = sqlite3_bind_blob(_stmt_holder->get(), index, value.data(), static_cast<int>(value.size()),
+                                    SQLITE_TRANSIENT);
+        if (rc != SQLITE_OK) {
+            throw sqlite_error("failed to bind blob", rc);
         }
-
-        bind(index, value);
     }
 
-    inline void statement::bind(const std::string &parameter_name, sqlite3_int64 value) {
-        auto index = sqlite3_bind_parameter_index(_stmt_holder->get(), parameter_name.c_str());
-        if (index == 0) {
-            std::string what;
-            what.append("No matching parameter named '");
-            what.append(parameter_name);
-            what.append("' is found");
-            throw std::logic_error(what);
+    inline void statement::bind(int index, std::nullptr_t) {
+        auto rc = sqlite3_bind_null(_stmt_holder->get(), index);
+        if (rc != SQLITE_OK) {
+            throw sqlite_error("failed to bind blob", rc);
         }
-
-        bind(index, value);
     }
 
-    inline void statement::bind(const std::string &parameter_name, double value) {
+    template<class T>
+    void statement::bind(const std::string &parameter_name, T &&value) {
         auto index = sqlite3_bind_parameter_index(_stmt_holder->get(), parameter_name.c_str());
         if (index == 0) {
             std::string what;
-            what.append("No matching parameter named '");
+            what.append("no matching parameter named '");
             what.append(parameter_name);
             what.append("' is found");
             throw std::logic_error(what);
         }
 
-        bind(index, value);
-    }
-
-    inline void statement::bind(const std::string &parameter_name, const std::string &value) {
-        auto index = sqlite3_bind_parameter_index(_stmt_holder->get(), parameter_name.c_str());
-        if (index == 0) {
-            std::string what;
-            what.append("No matching parameter named '");
-            what.append(parameter_name);
-            what.append("' is found");
-            throw std::logic_error(what);
-        }
-
-        bind(index, value);
-    }
-
-    inline void statement::bind(const std::string &parameter_name, const char *value) {
-        auto index = sqlite3_bind_parameter_index(_stmt_holder->get(), parameter_name.c_str());
-        if (index == 0) {
-            std::string what;
-            what.append("No matching parameter named '");
-            what.append(parameter_name);
-            what.append("' is found");
-            throw std::logic_error(what);
-        }
-
-        bind(index, value);
-    }
-
-    inline void statement::bind(const std::string &parameter_name, blob value) {
-        auto index = sqlite3_bind_parameter_index(_stmt_holder->get(), parameter_name.c_str());
-        if (index == 0) {
-            std::string what;
-            what.append("No matching parameter named '");
-            what.append(parameter_name);
-            what.append("' is found");
-            throw std::logic_error(what);
-        }
-
-        bind(index, std::move(value));
+        bind(index, std::forward<T>(value));
     }
 
     inline void statement::clear_bindings() {
@@ -1107,8 +1071,19 @@ namespace scandium {
     template<>
     inline blob cursor::get(int column_index) const {
         blob blob;
-        blob.data = sqlite3_column_blob(_stmt_holder->get(), column_index);
         blob.size = sqlite3_column_bytes(_stmt_holder->get(), column_index);
+        blob.data = sqlite3_column_blob(_stmt_holder->get(), column_index);
+        return blob;
+    }
+
+    template<>
+    inline std::vector<unsigned char> cursor::get(int column_index) const {
+        auto size = sqlite3_column_bytes(_stmt_holder->get(), column_index);
+        auto data = reinterpret_cast<const unsigned char *>(sqlite3_column_blob(_stmt_holder->get(), column_index));
+        std::vector<unsigned char> blob;
+
+        blob.reserve(size);
+        blob.assign(data, data + size);
         return blob;
     }
 
@@ -1117,12 +1092,28 @@ namespace scandium {
         auto index = get_column_index(column_name);
         if (index == -1) {
             std::string what;
-            what.append("Column named '");
+            what.append("column named '");
             what.append(column_name);
             what.append("' does not exist");
             throw std::logic_error(what);
         }
         return get<T>(index);
+    }
+
+    inline bool cursor::is_null(int column_index) const {
+        return sqlite3_column_blob(_stmt_holder->get(), column_index) == nullptr;
+    }
+
+    inline bool cursor::is_null(const std::string &column_name) const {
+        auto index = get_column_index(column_name);
+        if (index == -1) {
+            std::string what;
+            what.append("column named '");
+            what.append(column_name);
+            what.append("' does not exist");
+            throw std::logic_error(what);
+        }
+        return is_null(index);
     }
 
     inline std::string cursor::get_column_name(int column_index) const {
@@ -1152,29 +1143,15 @@ namespace scandium {
 
 #pragma mark ## iterator ##
 
-    inline iterator::iterator(iterator &&other) noexcept : _stmt_holder(std::move(other._stmt_holder)),
-                                                           _cursor(std::move(other._cursor)),
-                                                           _row_index(other._row_index),
-                                                           _state(other._state) {
-    }
-
-    inline iterator &iterator::operator=(iterator &&other) noexcept {
-        _stmt_holder = std::move(other._stmt_holder);
-        _cursor = std::move(other._cursor);
-        _row_index = other._row_index;
-        _state = other._state;
-
-        return *this;
-    }
-
     inline iterator &iterator::operator++() {
-        _state = sqlite3_step(_stmt_holder->get());
+        auto rc = sqlite3_step(_stmt_holder->get());
 
-        if (_state != SQLITE_ROW && _state != SQLITE_DONE) {
-            throw sqlite_error("failed to step statement", _state);
+        if (rc != SQLITE_ROW && rc != SQLITE_DONE) {
+            throw sqlite_error("failed to step statement", rc);
         }
 
-        _row_index++;
+        _state->rc = rc;
+        _state->row_index++;
         return *this;
     }
 
@@ -1187,16 +1164,15 @@ namespace scandium {
     }
 
     inline bool iterator::operator==(const iterator &other) const {
-        if (_state == SQLITE_DONE && other._state == -1) {
+        if (_state->rc == SQLITE_DONE && !other._state) {
             return true;
         }
 
-        if (_state == -1 && other._state == SQLITE_DONE) {
+        if (!_state && other._state->rc == SQLITE_DONE) {
             return true;
         }
 
         return _stmt_holder == other._stmt_holder
-               && _row_index == other._row_index
                && _state == other._state;
     }
 
@@ -1205,16 +1181,17 @@ namespace scandium {
     }
 
     inline iterator::iterator()
-            : _stmt_holder(), _cursor(nullptr), _row_index(0), _state(-1) {
+            : _stmt_holder(), _cursor(nullptr), _state() {
     }
 
     inline iterator::iterator(const std::shared_ptr<sqlite_stmt_holder> &stmt_holder,
                               std::uint_fast64_t row_index,
-                              int state)
+                              int rc)
             : _stmt_holder(stmt_holder),
               _cursor(stmt_holder),
-              _row_index(row_index),
-              _state(state) {
+              _state(std::make_shared<state>()) {
+        _state->row_index = row_index;
+        _state->rc = rc;
     }
 
 #pragma mark ## result_set ##
@@ -1356,6 +1333,13 @@ namespace scandium {
         return transaction(_db_holder, mode);
     }
 
+    inline void database::set_busy_timeout(int ms) {
+        auto rc = sqlite3_busy_timeout(_db_holder->get(), ms);
+        if (rc != SQLITE_OK) {
+            throw sqlite_error("failed to set busy timeout", rc);
+        }
+    }
+
     inline int database::get_user_version() {
         auto &&results = query("PRAGMA user_version;");
 
@@ -1369,7 +1353,7 @@ namespace scandium {
 
     inline void database::update_user_version(int version, transaction_mode mode) {
         if (version < 1) {
-            throw std::logic_error("Invalid version, must be > 0");
+            throw std::logic_error("invalid version, must be > 0");
         }
 
         auto old_version = get_user_version();

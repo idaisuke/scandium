@@ -1,15 +1,19 @@
 cmake_minimum_required(VERSION 3.3)
 project(scandium)
 
-include_directories( BEFORE ${CMAKE_CURRENT_SOURCE_DIR}/include )
+include_directories(BEFORE ${CMAKE_CURRENT_SOURCE_DIR}/include)
 
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++11")
+
+set(SOURCE_FILES test_scandium.cpp)
+#add_definitions(-DBOOST_TEST_DYN_LINK)
+add_executable(test_scandium ${SOURCE_FILES})
+target_link_libraries(test_scandium sqlite3)
+
+#set(Boost_USE_STATIC_LIBS OFF)
+set(Boost_USE_MULTITHREAD ON)
 find_package(Boost)
 IF (Boost_FOUND)
     include_directories(${Boost_INCLUDE_DIR})
-endif()
-
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++11")
-set(CMAKE_EXE_LINKER_FLAGS "-lsqlite3")
-
-set(SOURCE_FILES test_scandium.cpp)
-add_executable(scandium ${SOURCE_FILES})
+    target_link_libraries(test_scandium ${Boost_LIBRARIES})
+endif ()
