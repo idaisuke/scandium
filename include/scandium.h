@@ -614,11 +614,6 @@ namespace scandium {
         transaction create_transaction(transaction_mode mode = transaction_mode::deferred);
 
         /**
-         *  TODO:
-         */
-        void set_busy_timeout(int ms);
-
-        /**
          *  Gets the user version of the database, or 0 that is a default value.
          */
         int get_user_version();
@@ -661,6 +656,14 @@ namespace scandium {
         std::shared_ptr<sqlite_holder> _db_holder;
         std::function<void(database *, int, int)> _before_upgrade_user_version;
         std::function<void(database *, int, int)> _before_downgrade_user_version;
+
+        /**
+         *  Sets a busy handler that sleeps for a specified amount of time when a table is locked.
+         *
+         *  @ param ms max sleep time(milliseconds).
+         */
+        void set_busy_timeout(int ms);
+
     };
 
 #pragma mark ## sqlite_error ##
@@ -1270,6 +1273,7 @@ namespace scandium {
 
     inline void database::open() {
         _db_holder->open_path(_path);
+        set_busy_timeout(200);
     }
 
 #ifdef SQLITE_HAS_CODEC
@@ -1333,13 +1337,6 @@ namespace scandium {
         return transaction(_db_holder, mode);
     }
 
-    inline void database::set_busy_timeout(int ms) {
-        auto rc = sqlite3_busy_timeout(_db_holder->get(), ms);
-        if (rc != SQLITE_OK) {
-            throw sqlite_error("failed to set busy timeout", rc);
-        }
-    }
-
     inline int database::get_user_version() {
         auto &&results = query("PRAGMA user_version;");
 
@@ -1388,5 +1385,12 @@ namespace scandium {
 
     inline const std::string &database::get_path() const {
         return _path;
+    }
+
+    inline void database::set_busy_timeout(int ms) {
+        auto rc = sqlite3_busy_timeout(_db_holder->get(), ms);
+        if (rc != SQLITE_OK) {
+            throw sqlite_error("failed to set busy timeout", rc);
+        }
     }
 }

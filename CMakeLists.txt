@@ -6,9 +6,11 @@ include_directories(BEFORE ${CMAKE_CURRENT_SOURCE_DIR}/include)
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++11")
 
 set(SOURCE_FILES test_scandium.cpp)
-#add_definitions(-DBOOST_TEST_DYN_LINK)
 add_executable(test_scandium ${SOURCE_FILES})
 target_link_libraries(test_scandium sqlite3)
+
+#add_definitions(-DSQLITE_HAS_CODEC)
+#target_link_libraries(test_scandium crypto /usr/local/lib/libsqlcipher.a)
 
 #set(Boost_USE_STATIC_LIBS OFF)
 set(Boost_USE_MULTITHREAD ON)

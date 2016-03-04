@@ -60,9 +60,7 @@ BOOST_AUTO_TEST_CASE(open_close) {
 BOOST_AUTO_TEST_CASE(exec_sql_query) {
     scandium::database db(create_random_name());
     db.open();
-
-    db.set_busy_timeout(1000);
-
+    
     db.exec_sql("CREATE TABLE table_1(id INTEGER, name TEXT);");
     db.exec_sql("INSERT INTO table_1 VALUES(2, 'name 1');");
     db.exec_sql("INSERT INTO table_1 VALUES(4, 'name 2');");
@@ -365,6 +363,30 @@ BOOST_AUTO_TEST_CASE(statement) {
 
 #ifdef SQLITE_HAS_CODEC
 BOOST_AUTO_TEST_CASE(sqlcipher) {
+    auto path = create_random_name();
+    scandium::database db(path);
+    db.open("12345");
+    db.exec_sql("CREATE TABLE table_1(id INTEGER, data);");
+    db.exec_sql("INSERT INTO table_1 VALUES(1, 'data 1');");
+    db.exec_sql("INSERT INTO table_1 VALUES(2, 'data 2');");
+    db.close();
 
+    db.open();
+    BOOST_CHECK_THROW(db.query("SELECT id FROM table_1;"), scandium::sqlite_error);
+    db.close();
+
+    db.open("abcde");
+    BOOST_CHECK_THROW(db.query("SELECT id FROM table_1;"), scandium::sqlite_error);
+    db.close();
+
+    db.open("12345");
+    auto result = db.query("SELECT id FROM table_1;");
+    auto it = result.begin();
+    for (int i = 1; i <= 2; ++i) {
+        auto id = it->get<int>("id");
+        BOOST_CHECK_EQUAL(i, id);
+        ++it;
+    }
+    db.close();
 }
 #endif
