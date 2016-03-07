@@ -33,7 +33,7 @@ int test_scandium() {
     return test_scandium(0, nullptr);
 }
 
-int test_scandium(const std::string db_root_path) {
+int test_scandium(const std::string &db_root_path) {
     ::db_root_path = db_root_path;
     return test_scandium(0, nullptr);
 }
