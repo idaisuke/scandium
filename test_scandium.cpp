@@ -16,15 +16,6 @@ namespace {
     }
 }
 
-int test_scandium() {
-    return test_scandium(0, nullptr);
-}
-
-int test_scandium(const std::string db_root_path) {
-    ::db_root_path = db_root_path;
-    return test_scandium(0, nullptr);
-}
-
 int test_scandium(int argc, char **argv) {
     extern ::boost::unit_test::test_suite *init_unit_test_suite(int, char **);
 
@@ -36,6 +27,15 @@ int test_scandium(int argc, char **argv) {
         const char *argv2[] = {"test_scandium"};
         return ::boost::unit_test::unit_test_main(init_func, 1, const_cast<char **>(argv2));
     }
+}
+
+int test_scandium() {
+    return test_scandium(0, nullptr);
+}
+
+int test_scandium(const std::string db_root_path) {
+    ::db_root_path = db_root_path;
+    return test_scandium(0, nullptr);
 }
 
 BOOST_AUTO_TEST_CASE(open_close) {
